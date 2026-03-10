@@ -59,6 +59,26 @@ _normalizer = rdMolStandardize.NormalizerFromData(
 
 _alkoxide_pattern = Chem.MolFromSmarts("[Li,Na,K;+0]-[#7,#8;+0]")
 
+# Stereo-safe tautomer enumerator with capped enumeration for speed.
+#
+# The default RDKit TautomerEnumerator tries to generate up to 1000
+# tautomers per molecule, which causes hangs on complex structures.
+# The actual slowness comes from this combinatorial explosion, not from
+# the number of chemical rules. By capping maxTautomers and maxTransforms
+# to 50, we keep ALL ~30 tautomer rules (1,3-shifts, 1,5-shifts, imine/
+# enamine, aromatic tautomers like 2-pyridone ↔ 2-hydroxypyridine, etc.)
+# but stop exploring early on pathological molecules.
+#
+# CRITICAL: tautomerRemoveSp3Stereo and tautomerRemoveBondStereo must be
+# False. RDKit defaults have these True, which merges enantiomers (e.g.
+# L-alanine and D-alanine become the same SMILES).
+_tautomer_params = rdMolStandardize.CleanupParameters()
+_tautomer_params.tautomerRemoveSp3Stereo = False
+_tautomer_params.tautomerRemoveBondStereo = False
+_tautomer_params.maxTautomers = 50  # default 1000 — cap the explosion
+_tautomer_params.maxTransforms = 50  # default 1000 — cap per-molecule steps
+_tautomer_enumerator = rdMolStandardize.TautomerEnumerator(_tautomer_params)
+
 
 def normalize_mol(m):
     """ """
@@ -72,12 +92,13 @@ def normalize_mol(m):
     res = _normalizer.normalize(m)
     return res
 
+
 def _assess_explicit_valence_for_rdkit_version(rdkit_version, atom_neighbor):
     rdkit_version = rdkit.__version__
     if tuple(map(int, rdkit_version.split("."))) >= (2025, 9, 1):
-        return(atom_neighbor.GetValence(Chem.ValenceType.EXPLICIT))
+        return atom_neighbor.GetValence(Chem.ValenceType.EXPLICIT)
     else:
-        return(atom_neighbor.GetExplicitValence())
+        return atom_neighbor.GetExplicitValence()
 
 
 def remove_hs_from_mol(m):
@@ -119,7 +140,9 @@ def remove_hs_from_mol(m):
             else:
                 is_protonated = (
                     nbr.GetFormalCharge() == 1
-                    and _assess_explicit_valence_for_rdkit_version(rdkit.__version__, nbr)
+                    and _assess_explicit_valence_for_rdkit_version(
+                        rdkit.__version__, nbr
+                    )
                     == Chem.GetPeriodicTable().GetDefaultValence(nbr.GetAtomicNum()) + 1
                 )
                 if nbr.GetChiralTag() in (
@@ -128,10 +151,9 @@ def remove_hs_from_mol(m):
                 ):
                     preserve = True
                 elif not is_protonated:
-                    if (
-                        _assess_explicit_valence_for_rdkit_version(rdkit.__version__, nbr)
-                        > Chem.GetPeriodicTable().GetDefaultValence(nbr.GetAtomicNum())
-                    ):
+                    if _assess_explicit_valence_for_rdkit_version(
+                        rdkit.__version__, nbr
+                    ) > Chem.GetPeriodicTable().GetDefaultValence(nbr.GetAtomicNum()):
                         preserve = True
                     else:
                         ringBonds = [
@@ -519,3 +541,87 @@ def standardize_molblock(ctab, check_exclusion=True):
         if exclude_flag(m, includeRDKitSanitization=False):
             return ctab
     return Chem.MolToMolBlock(standardize_mol(m, check_exclusion=False, sanitize=False))
+
+
+def standardize_and_canonicalize_mol(m, check_exclusion=False):
+    """Full standardization pipeline: normalize, strip salts, canonicalize tautomers.
+
+    Combines three steps that the original ChEMBL pipeline keeps separate:
+
+      1. standardize_mol()  — normalize functional groups (nitro, sulfoxide,
+         amide tautomers, etc.), uncharge, remove Hs (stereo-safe), kekulize.
+
+      2. get_fragment_parent_mol(neutralize=True)  — strip salts and solvents
+         using ChEMBL's curated lists (137 salts, 9 solvents).
+         NOTE: uses get_fragment_parent_mol, NOT get_parent_mol, so isotope
+         labels (deuterium, 13C, etc.) are preserved.
+
+      3. TautomerEnumerator.Canonicalize()  — force each molecule into a single
+         canonical tautomeric form (keto/enol, etc.) so that different tautomers
+         of the same compound produce the same SMILES. Uses stereo-safe settings
+         (tautomerRemoveSp3Stereo=False, tautomerRemoveBondStereo=False) to
+         preserve R/S and E/Z stereochemistry.
+
+    Args:
+        m: RDKit Mol object
+        check_exclusion: if True, skip standardization for metallic/boron
+            compounds (returns input mol unchanged). Default False.
+
+    Returns:
+        RDKit Mol object (standardized, salt-stripped, tautomer-canonicalized)
+
+    Example:
+        >>> from rdkit import Chem
+        >>> mol = Chem.MolFromSmiles('CC(O)=N')  # imidic acid form of acetamide
+        >>> result = standardize_and_canonicalize_mol(mol)
+        >>> Chem.MolToSmiles(result)
+        'CC(N)=O'
+
+        >>> mol = Chem.MolFromSmiles('[NH3+]CC([O-])=O')  # glycine zwitterion
+        >>> Chem.MolToSmiles(standardize_and_canonicalize_mol(mol))
+        'NCC(=O)O'
+    """
+    # Step 1: ChEMBL standardization (normalize, uncharge, cleanup)
+    m = standardize_mol(m, check_exclusion=check_exclusion)
+
+    # Step 2: Strip salts/solvents, neutralize — but preserve isotopes
+    m, _ = get_fragment_parent_mol(m, neutralize=True)
+
+    # Step 3: Stereo-safe tautomer canonicalization
+    m = _tautomer_enumerator.Canonicalize(m)
+
+    return m
+
+
+def standardize_and_canonicalize_smiles(smiles):
+    """Convenience function: SMILES in → standardized canonical SMILES out.
+
+    Parses the input SMILES, runs the full standardization pipeline
+    (standardize_and_canonicalize_mol), and returns a canonical isomeric
+    SMILES string.
+
+    Args:
+        smiles: input SMILES string
+
+    Returns:
+        Standardized canonical SMILES string, or None if parsing fails.
+
+    Example:
+        >>> standardize_and_canonicalize_smiles('CC(=O)N')  # acetamide
+        'CC(N)=O'
+        >>> standardize_and_canonicalize_smiles('CC(O)=N')  # imidic acid → same
+        'CC(N)=O'
+        >>> standardize_and_canonicalize_smiles('N[C@@H](C)C(=O)O')  # L-alanine stereo preserved
+        'C[C@H](N)C(=O)O'
+        >>> standardize_and_canonicalize_smiles('N[C@H](C)C(=O)O')   # D-alanine stays distinct
+        'C[C@@H](N)C(=O)O'
+        >>> standardize_and_canonicalize_smiles('Cn1c(=O)c2c(ncn2C)n(C)c1=O.OC(=O)CC(O)(CC(=O)O)C(=O)O')  # caffeine citrate → caffeine
+        'Cn1c(=O)c2c(ncn2C)n(C)c1=O'
+        >>> standardize_and_canonicalize_smiles('[2H]c1c([2H])c([2H])c([2H])c([2H])c1[2H]')  # isotopes preserved
+        '[2H]c1c([2H])c([2H])c([2H])c([2H])c1[2H]'
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None or mol.GetNumAtoms() == 0:
+        return None
+    mol = standardize_and_canonicalize_mol(mol)
+    return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
