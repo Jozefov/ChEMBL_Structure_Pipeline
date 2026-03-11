@@ -16,6 +16,9 @@ import os
 import sys
 import time
 
+from rdkit import Chem
+from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
+
 from chembl_structure_pipeline.parallel import batch_standardize_smiles
 
 
@@ -75,15 +78,36 @@ def main():
     print(f"Canonicalized {n_ok}/{len(results)} molecules in {elapsed:.1f}s "
           f"({n_fail} failures kept original SMILES)")
 
+    # Compute InChIKey14 (connectivity layer) for each final SMILES
+    print("Computing InChIKey14...")
+    inchikey14_list = []
+    for row, canon_smi in zip(rows, results):
+        smi = canon_smi if canon_smi is not None else row["smiles"]
+        try:
+            mol = Chem.MolFromSmiles(smi)
+            if mol is not None:
+                inchi = MolToInchi(mol)
+                if inchi is not None:
+                    inchikey14_list.append(InchiToInchiKey(inchi)[:14])
+                else:
+                    inchikey14_list.append("")
+            else:
+                inchikey14_list.append("")
+        except Exception:
+            inchikey14_list.append("")
+
     # Write output TSV — keep original SMILES on failure
     with open(args.output, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["cid", "smiles", "formula", "mass"],
-                                delimiter="\t")
+        writer = csv.DictWriter(
+            f, fieldnames=["cid", "smiles", "formula", "mass", "inchikey14"],
+            delimiter="\t",
+        )
         writer.writeheader()
-        for row, canon_smi in zip(rows, results):
+        for row, canon_smi, ik14 in zip(rows, results, inchikey14_list):
             out_row = dict(row)
             if canon_smi is not None:
                 out_row["smiles"] = canon_smi
+            out_row["inchikey14"] = ik14
             writer.writerow(out_row)
 
     print(f"Wrote {len(rows)} rows to {args.output}")
