@@ -76,8 +76,8 @@ _tautomer_params = rdMolStandardize.CleanupParameters()
 _tautomer_params.tautomerRemoveSp3Stereo = False
 _tautomer_params.tautomerRemoveBondStereo = False
 _tautomer_params.tautomerRemoveIsotopicHs = False
-_tautomer_params.maxTautomers = 50  # default 1000 — cap the explosion
-_tautomer_params.maxTransforms = 50  # default 1000 — cap per-molecule steps
+_tautomer_params.maxTautomers = 1000  # default 1000 — cap the explosion
+_tautomer_params.maxTransforms = 1000  # default 1000 — cap per-molecule steps
 _tautomer_enumerator = rdMolStandardize.TautomerEnumerator(_tautomer_params)
 
 

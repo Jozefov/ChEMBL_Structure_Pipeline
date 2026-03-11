@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N pubchem_canon
-#PBS -l select=1:ncpus=16:mem=64gb:scratch_local=40gb
+#PBS -l select=1:ncpus=16:mem=256gb:scratch_local=40gb
 #PBS -l walltime=48:00:00
 
 set -e
