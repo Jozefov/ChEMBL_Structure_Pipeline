@@ -43,7 +43,10 @@ python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     --workers 16 \
     --batch-size 500000 \
     $RESUME_FLAG \
-    > "$SCRATCHDIR/pubchem_canon.log" 2>&1 || exit 3
+    2>&1 | tee "$SCRATCHDIR/pubchem_canon.log" || {
+    cp "$SCRATCHDIR/pubchem_canon.log" "$OUTPUT_DIR/pubchem_canon.log" 2>/dev/null
+    exit 3
+}
 
 echo "Finished at $(date)"
 

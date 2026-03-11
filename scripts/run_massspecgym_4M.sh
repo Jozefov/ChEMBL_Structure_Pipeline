@@ -22,12 +22,17 @@ mamba activate "$ENV_PREFIX"
 cp "$INPUT" "$SCRATCHDIR/input.tsv" || exit 2
 
 echo "Starting canonicalization of 4M dataset at $(date)"
+
+# Run python — tee stdout to log, keep stderr visible to PBS
 python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     "$SCRATCHDIR/input.tsv" \
     "$SCRATCHDIR/output.tsv" \
     --workers 16 \
-    --checkpoint \
-    > "$SCRATCHDIR/canon_4M.log" 2>&1 || exit 3
+    --batch-size 500000 \
+    2>&1 | tee "$SCRATCHDIR/canon_4M.log" || {
+    cp "$SCRATCHDIR/canon_4M.log" "$DATA_DIR/canon_4M.log" 2>/dev/null
+    exit 3
+}
 
 cp "$SCRATCHDIR/output.tsv" "$OUTPUT" || exit 4
 cp "$SCRATCHDIR/canon_4M.log" "$DATA_DIR/canon_4M.log" || exit 5
