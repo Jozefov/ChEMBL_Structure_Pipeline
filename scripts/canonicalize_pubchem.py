@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""Canonicalize PubChem SMILES using ChEMBL Structure Pipeline.
+"""Canonicalize SMILES in a TSV file using ChEMBL Structure Pipeline.
 
-Reads a TSV file with columns: cid, smiles, formula, mass
-Standardizes and canonicalizes SMILES in parallel, preserving all columns.
-Molecules that fail standardization keep their original SMILES.
+Reads any TSV with a 'smiles' column, standardizes and canonicalizes
+SMILES in parallel, adds an inchikey14 column, and preserves all
+original columns. Molecules that fail standardization keep their
+original SMILES.
 
 Usage:
     python canonicalize_pubchem.py input.tsv output.tsv --workers 16
@@ -26,7 +27,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Canonicalize PubChem SMILES with ChEMBL Structure Pipeline",
     )
-    parser.add_argument("input", help="Input TSV (cid, smiles, formula, mass)")
+    parser.add_argument("input", help="Input TSV with a 'smiles' column")
     parser.add_argument("output", help="Output TSV with canonicalized SMILES")
     parser.add_argument(
         "--workers", "-w", type=int, default=None,
@@ -59,8 +60,13 @@ def main():
     rows = []
     with open(args.input, newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
+        input_fieldnames = list(reader.fieldnames)
         for row in reader:
             rows.append(row)
+
+    if "smiles" not in input_fieldnames:
+        print("Error: input TSV must have a 'smiles' column", file=sys.stderr)
+        sys.exit(1)
 
     smiles_list = [row["smiles"] for row in rows]
     print(f"Read {len(smiles_list)} molecules")
@@ -96,10 +102,13 @@ def main():
         except Exception:
             inchikey14_list.append("")
 
-    # Write output TSV — keep original SMILES on failure
+    # Write output TSV — keep original SMILES on failure, add inchikey14
+    output_fieldnames = input_fieldnames + (
+        ["inchikey14"] if "inchikey14" not in input_fieldnames else []
+    )
     with open(args.output, "w", newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["cid", "smiles", "formula", "mass", "inchikey14"],
+            f, fieldnames=output_fieldnames,
             delimiter="\t",
         )
         writer.writeheader()
