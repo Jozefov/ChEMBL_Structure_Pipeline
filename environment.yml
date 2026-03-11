@@ -1,0 +1,11 @@
+name: chembl_pipeline
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit>=2022.09
+  - setuptools>=46.4.0
+  - pytest
+  - pip
+  - pip:
+    - -e .

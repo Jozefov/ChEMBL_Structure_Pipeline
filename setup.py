@@ -12,5 +12,10 @@ setup(
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     install_requires=["setuptools>=46.4.0", "rdkit>=2022.09.01"],
+    entry_points={
+        "console_scripts": [
+            "chembl-standardize=chembl_structure_pipeline.cli:main",
+        ],
+    },
     zip_safe=False,
 )

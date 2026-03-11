@@ -100,6 +100,13 @@ was found:
 from .checker import check_molblock
 from .standardizer import standardize_molblock, standardize_mol
 from .standardizer import get_parent_molblock, get_parent_mol
+from .standardizer import standardize_and_canonicalize_smiles, standardize_and_canonicalize_mol
+from .parallel import (
+    batch_standardize_smiles,
+    batch_standardize_molblocks,
+    batch_get_parent_molblocks,
+    batch_check_molblocks,
+)
 
 __version__ = "1.2.4"
 

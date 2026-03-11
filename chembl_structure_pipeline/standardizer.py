@@ -75,6 +75,7 @@ _alkoxide_pattern = Chem.MolFromSmarts("[Li,Na,K;+0]-[#7,#8;+0]")
 _tautomer_params = rdMolStandardize.CleanupParameters()
 _tautomer_params.tautomerRemoveSp3Stereo = False
 _tautomer_params.tautomerRemoveBondStereo = False
+_tautomer_params.tautomerRemoveIsotopicHs = False
 _tautomer_params.maxTautomers = 50  # default 1000 — cap the explosion
 _tautomer_params.maxTransforms = 50  # default 1000 — cap per-molecule steps
 _tautomer_enumerator = rdMolStandardize.TautomerEnumerator(_tautomer_params)
@@ -316,18 +317,45 @@ _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 _solvents_file = os.path.join(_data_dir, "solvents.smi")
 _salts_file = os.path.join(_data_dir, "salts.smi")
 
+# Cached salt/solvent patterns — loaded once per process, reused across calls.
+_cached_solvents = None
+_cached_salts = None
+
+
+def _load_solvents():
+    global _cached_solvents
+    if _cached_solvents is None:
+        solvents = []
+        with open(_solvents_file) as inf:
+            for l in inf:
+                if not l or l[0] == "#":
+                    continue
+                l = l.strip().split("\t")
+                if len(l) != 2:
+                    continue
+                solvents.append((l[0], Chem.MolFromSmarts(l[1])))
+        _cached_solvents = solvents
+    return _cached_solvents
+
+
+def _load_salts():
+    global _cached_salts
+    if _cached_salts is None:
+        salts = []
+        with open(_salts_file) as inf:
+            for l in inf:
+                if not l or l[0] == "#":
+                    continue
+                l = l.strip().split("\t")
+                if len(l) != 2:
+                    continue
+                salts.append((l[0], Chem.MolFromSmarts(l[1])))
+        _cached_salts = salts
+    return _cached_salts
+
 
 def get_fragment_parent_mol(m, check_exclusion=False, neutralize=False, verbose=False):
-    basepath = os.path.dirname(os.path.abspath(__file__))
-    with open(_solvents_file) as inf:
-        solvents = []
-        for l in inf:
-            if not l or l[0] == "#":
-                continue
-            l = l.strip().split("\t")
-            if len(l) != 2:
-                continue
-            solvents.append((l[0], Chem.MolFromSmarts(l[1])))
+    solvents = _load_solvents()
 
     # there are a number of special cases for the ChEMBL salt stripping, so we
     # can't use the salt remover that's built into the RDKit standardizer.
@@ -364,15 +392,7 @@ def get_fragment_parent_mol(m, check_exclusion=False, neutralize=False, verbose=
             res = Chem.Mol(m)
         return res, exclude
 
-    with open(_salts_file) as inf:
-        salts = []
-        for l in inf:
-            if not l or l[0] == "#":
-                continue
-            l = l.strip().split("\t")
-            if len(l) != 2:
-                continue
-            salts.append((l[0], Chem.MolFromSmarts(l[1])))
+    salts = _load_salts()
 
     keepFrags1 = []
     keepFrags2 = []
