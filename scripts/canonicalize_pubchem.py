@@ -6,13 +6,17 @@ SMILES in parallel, adds an inchikey14 column, and preserves all
 original columns. Molecules that fail standardization keep their
 original SMILES.
 
+Processes data in streaming chunks to keep memory usage constant
+regardless of file size.
+
 Usage:
     python canonicalize_pubchem.py input.tsv output.tsv --workers 16
-    python canonicalize_pubchem.py input.tsv output.tsv --checkpoint
+    python canonicalize_pubchem.py input.tsv output.tsv --batch-size 500000
     python canonicalize_pubchem.py input.tsv output.tsv --resume
 """
 import argparse
 import csv
+import json
 import os
 import sys
 import time
@@ -23,9 +27,38 @@ from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
 from chembl_structure_pipeline.parallel import batch_standardize_smiles
 
 
+def compute_inchikey14(smi):
+    """Compute first 14 chars of InChIKey (connectivity layer) from SMILES."""
+    try:
+        mol = Chem.MolFromSmiles(smi)
+        if mol is not None:
+            inchi = MolToInchi(mol)
+            if inchi is not None:
+                return InchiToInchiKey(inchi)[:14]
+    except Exception:
+        pass
+    return ""
+
+
+def _load_progress(progress_path):
+    """Load number of rows already written from a progress file."""
+    if progress_path and os.path.exists(progress_path):
+        with open(progress_path) as f:
+            data = json.load(f)
+            return data.get("rows_done", 0)
+    return 0
+
+
+def _save_progress(progress_path, rows_done):
+    """Save progress to file."""
+    if progress_path:
+        with open(progress_path, "w") as f:
+            json.dump({"rows_done": rows_done}, f)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Canonicalize PubChem SMILES with ChEMBL Structure Pipeline",
+        description="Canonicalize SMILES with ChEMBL Structure Pipeline",
     )
     parser.add_argument("input", help="Input TSV with a 'smiles' column")
     parser.add_argument("output", help="Output TSV with canonicalized SMILES")
@@ -34,97 +67,118 @@ def main():
         help="Number of worker processes (default: all CPUs)",
     )
     parser.add_argument(
-        "--checkpoint", action="store_true",
-        help="Enable checkpointing for resume support",
+        "--batch-size", type=int, default=500_000,
+        help="Rows per batch (default: 500000). Controls memory usage.",
     )
     parser.add_argument(
         "--resume", action="store_true",
-        help="Resume from existing checkpoint file",
-    )
-    parser.add_argument(
-        "--checkpoint-file", default=None,
-        help="Custom checkpoint file path (default: <output>.checkpoint.jsonl)",
+        help="Resume from where a previous run left off",
     )
     args = parser.parse_args()
 
-    checkpoint_path = None
-    if args.checkpoint or args.resume:
-        checkpoint_path = args.checkpoint_file or (args.output + ".checkpoint.jsonl")
+    progress_path = args.output + ".progress.json"
 
-    if args.resume and checkpoint_path and not os.path.exists(checkpoint_path):
-        print(f"Error: checkpoint file {checkpoint_path} not found", file=sys.stderr)
-        sys.exit(1)
-
-    # Read input TSV
-    print(f"Reading {args.input}...")
-    rows = []
+    # Detect header from input
     with open(args.input, newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         input_fieldnames = list(reader.fieldnames)
-        for row in reader:
-            rows.append(row)
 
     if "smiles" not in input_fieldnames:
         print("Error: input TSV must have a 'smiles' column", file=sys.stderr)
         sys.exit(1)
 
-    smiles_list = [row["smiles"] for row in rows]
-    print(f"Read {len(smiles_list)} molecules")
-
-    # Canonicalize in parallel
-    t0 = time.time()
-    results = batch_standardize_smiles(
-        smiles_list, n_workers=args.workers, checkpoint_path=checkpoint_path,
-    )
-    elapsed = time.time() - t0
-
-    # Count successes and failures
-    n_ok = sum(1 for r in results if r is not None)
-    n_fail = len(results) - n_ok
-    print(f"Canonicalized {n_ok}/{len(results)} molecules in {elapsed:.1f}s "
-          f"({n_fail} failures kept original SMILES)")
-
-    # Compute InChIKey14 (connectivity layer) for each final SMILES
-    print("Computing InChIKey14...")
-    inchikey14_list = []
-    for row, canon_smi in zip(rows, results):
-        smi = canon_smi if canon_smi is not None else row["smiles"]
-        try:
-            mol = Chem.MolFromSmiles(smi)
-            if mol is not None:
-                inchi = MolToInchi(mol)
-                if inchi is not None:
-                    inchikey14_list.append(InchiToInchiKey(inchi)[:14])
-                else:
-                    inchikey14_list.append("")
-            else:
-                inchikey14_list.append("")
-        except Exception:
-            inchikey14_list.append("")
-
-    # Write output TSV — keep original SMILES on failure, add inchikey14
     output_fieldnames = input_fieldnames + (
         ["inchikey14"] if "inchikey14" not in input_fieldnames else []
     )
-    with open(args.output, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=output_fieldnames,
-            delimiter="\t",
-        )
-        writer.writeheader()
-        for row, canon_smi, ik14 in zip(rows, results, inchikey14_list):
-            out_row = dict(row)
-            if canon_smi is not None:
-                out_row["smiles"] = canon_smi
-            out_row["inchikey14"] = ik14
-            writer.writerow(out_row)
 
-    print(f"Wrote {len(rows)} rows to {args.output}")
+    # Resume support: skip already-processed rows
+    rows_done = 0
+    if args.resume:
+        rows_done = _load_progress(progress_path)
+        if rows_done > 0:
+            print(f"Resuming from row {rows_done}")
 
-    # Clean up checkpoint on success
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        os.unlink(checkpoint_path)
-        print(f"Removed checkpoint file {checkpoint_path}")
+    # Open output: append if resuming, write fresh otherwise
+    write_mode = "a" if rows_done > 0 else "w"
+
+    t0 = time.time()
+    total_ok = 0
+    total_fail = 0
+    total_rows = 0
+
+    with open(args.input, newline="") as fin, \
+         open(args.output, write_mode, newline="") as fout:
+
+        reader = csv.DictReader(fin, delimiter="\t")
+        writer = csv.DictWriter(fout, fieldnames=output_fieldnames, delimiter="\t")
+
+        if write_mode == "w":
+            writer.writeheader()
+
+        # Skip already-processed rows if resuming
+        for _ in range(rows_done):
+            try:
+                next(reader)
+            except StopIteration:
+                break
+
+        # Process in batches
+        batch_num = 0
+        while True:
+            # Read a batch of rows
+            batch = []
+            for _ in range(args.batch_size):
+                try:
+                    batch.append(next(reader))
+                except StopIteration:
+                    break
+            if not batch:
+                break
+
+            batch_num += 1
+            smiles_list = [row["smiles"] for row in batch]
+            print(f"Batch {batch_num}: processing {len(batch)} molecules "
+                  f"(rows {rows_done + 1}–{rows_done + len(batch)})...")
+
+            # Canonicalize in parallel
+            results = batch_standardize_smiles(
+                smiles_list, n_workers=args.workers,
+            )
+
+            n_ok = sum(1 for r in results if r is not None)
+            n_fail = len(results) - n_ok
+            total_ok += n_ok
+            total_fail += n_fail
+
+            # Compute InChIKey14 and write results
+            for row, canon_smi in zip(batch, results):
+                smi = canon_smi if canon_smi is not None else row["smiles"]
+                out_row = dict(row)
+                if canon_smi is not None:
+                    out_row["smiles"] = canon_smi
+                out_row["inchikey14"] = compute_inchikey14(smi)
+                writer.writerow(out_row)
+
+            rows_done += len(batch)
+            total_rows += len(batch)
+            fout.flush()
+
+            # Save progress after each batch
+            _save_progress(progress_path, rows_done)
+
+            elapsed = time.time() - t0
+            rate = total_rows / elapsed if elapsed > 0 else 0
+            print(f"  Done: {n_ok}/{len(batch)} ok, {n_fail} failed | "
+                  f"Total: {rows_done} rows, {rate:.0f} mol/s")
+
+    elapsed = time.time() - t0
+    print(f"\nFinished: {total_ok + total_fail} molecules in {elapsed:.1f}s "
+          f"({total_ok} ok, {total_fail} failures kept original SMILES)")
+    print(f"Output: {args.output}")
+
+    # Clean up progress file on success
+    if os.path.exists(progress_path):
+        os.unlink(progress_path)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N pubchem_canon
-#PBS -l select=1:ncpus=16:mem=32gb:scratch_local=20gb
-#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=16:mem=64gb:scratch_local=40gb
+#PBS -l walltime=48:00:00
 
 set -e
 
@@ -22,15 +22,27 @@ mamba activate "$ENV_PREFIX"
 # Copy input to scratch for faster I/O
 cp "$INPUT" "$SCRATCHDIR/pubchem.tsv" || exit 2
 
+# Copy partial output and progress if resuming
+if [ -f "$OUTPUT" ]; then
+    cp "$OUTPUT" "$SCRATCHDIR/pubchem_canonicalized.tsv"
+fi
+if [ -f "$OUTPUT.progress.json" ]; then
+    cp "$OUTPUT.progress.json" "$SCRATCHDIR/pubchem_canonicalized.tsv.progress.json"
+    RESUME_FLAG="--resume"
+else
+    RESUME_FLAG=""
+fi
+
 echo "Starting canonicalization at $(date)"
 echo "Input: $INPUT"
-echo "Workers: 16"
+echo "Workers: 16, Batch size: 500000"
 
 python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     "$SCRATCHDIR/pubchem.tsv" \
     "$SCRATCHDIR/pubchem_canonicalized.tsv" \
     --workers 16 \
-    --checkpoint \
+    --batch-size 500000 \
+    $RESUME_FLAG \
     > "$SCRATCHDIR/pubchem_canon.log" 2>&1 || exit 3
 
 echo "Finished at $(date)"
