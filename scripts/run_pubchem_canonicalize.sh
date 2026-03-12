@@ -35,13 +35,13 @@ fi
 
 echo "Starting canonicalization at $(date)"
 echo "Input: $INPUT"
-echo "Workers: 48, Batch size: 500000"
+echo "Workers: 48, Batch size: 2000000"
 
 python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     "$SCRATCHDIR/pubchem.tsv" \
     "$SCRATCHDIR/pubchem_canonicalized.tsv" \
     --workers 48 \
-    --batch-size 500000 \
+    --batch-size 2000000 \
     $RESUME_FLAG \
     2>&1 | tee "$SCRATCHDIR/pubchem_canon.log" || {
     cp "$SCRATCHDIR/pubchem_canon.log" "$OUTPUT_DIR/pubchem_canon.log" 2>/dev/null
