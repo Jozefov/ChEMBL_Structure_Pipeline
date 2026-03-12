@@ -89,6 +89,33 @@ def _worker_standardize_smiles(chunk):
     return results
 
 
+def _worker_standardize_smiles_with_inchikey(chunk):
+    """Process a list of (index, smiles) tuples, returning (canon_smi, inchikey14)."""
+    from . import standardizer
+    from rdkit import Chem
+    from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
+
+    results = []
+    for idx, smi in chunk:
+        try:
+            canon = standardizer.standardize_and_canonicalize_smiles(smi)
+        except Exception:
+            canon = None
+        # Compute InChIKey14 from canonical (or original) SMILES
+        use_smi = canon if canon is not None else smi
+        ik14 = ""
+        try:
+            mol = Chem.MolFromSmiles(use_smi)
+            if mol is not None:
+                inchi = MolToInchi(mol)
+                if inchi is not None:
+                    ik14 = InchiToInchiKey(inchi)[:14]
+        except Exception:
+            pass
+        results.append((idx, (canon, ik14)))
+    return results
+
+
 def _worker_standardize_molblocks(chunk):
     from . import standardizer
     results = []
@@ -194,9 +221,10 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
     if chunk_size is not None:
         n_chunks = max(1, -(-len(work) // chunk_size))
     else:
-        # Use more chunks than workers for better progress granularity
-        # (each chunk completion triggers a checkpoint write)
-        n_chunks = min(len(work), n_workers * 4)
+        # Use small chunks for better load balancing with variable-complexity
+        # molecules (avoids straggler chunks blocking idle workers)
+        chunk_size = 2000
+        n_chunks = max(1, -(-len(work) // chunk_size))
 
     chunks = _chunkify(work, n_chunks)
 
@@ -242,6 +270,27 @@ def batch_standardize_smiles(
         smiles_list, _worker_standardize_smiles,
         n_workers, chunk_size, checkpoint_path,
         default_result=None,
+    )
+
+
+def batch_standardize_smiles_with_inchikey(
+    smiles_list: List[str],
+    n_workers: Optional[int] = None,
+    chunk_size: Optional[int] = None,
+    checkpoint_path: Optional[str] = None,
+) -> List[Tuple[Optional[str], str]]:
+    """Standardize SMILES and compute InChIKey14 in parallel.
+
+    Combines canonicalization and InChIKey computation in the same worker
+    to avoid a serial InChIKey pass after parallel standardization.
+
+    Returns:
+        List of (canonical_smiles_or_None, inchikey14) tuples, same order as input.
+    """
+    return _batch_process(
+        smiles_list, _worker_standardize_smiles_with_inchikey,
+        n_workers, chunk_size, checkpoint_path,
+        default_result=(None, ""),
     )
 
 

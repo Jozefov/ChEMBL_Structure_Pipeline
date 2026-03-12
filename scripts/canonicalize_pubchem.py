@@ -21,23 +21,7 @@ import os
 import sys
 import time
 
-from rdkit import Chem
-from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
-
-from chembl_structure_pipeline.parallel import batch_standardize_smiles
-
-
-def compute_inchikey14(smi):
-    """Compute first 14 chars of InChIKey (connectivity layer) from SMILES."""
-    try:
-        mol = Chem.MolFromSmiles(smi)
-        if mol is not None:
-            inchi = MolToInchi(mol)
-            if inchi is not None:
-                return InchiToInchiKey(inchi)[:14]
-    except Exception:
-        pass
-    return ""
+from chembl_structure_pipeline.parallel import batch_standardize_smiles_with_inchikey
 
 
 def _load_progress(progress_path):
@@ -140,23 +124,22 @@ def main():
             print(f"Batch {batch_num}: processing {len(batch)} molecules "
                   f"(rows {rows_done + 1}–{rows_done + len(batch)})...")
 
-            # Canonicalize in parallel
-            results = batch_standardize_smiles(
+            # Canonicalize and compute InChIKey14 in parallel
+            results = batch_standardize_smiles_with_inchikey(
                 smiles_list, n_workers=args.workers,
             )
 
-            n_ok = sum(1 for r in results if r is not None)
+            n_ok = sum(1 for canon, _ in results if canon is not None)
             n_fail = len(results) - n_ok
             total_ok += n_ok
             total_fail += n_fail
 
-            # Compute InChIKey14 and write results
-            for row, canon_smi in zip(batch, results):
-                smi = canon_smi if canon_smi is not None else row["smiles"]
+            # Write results
+            for row, (canon_smi, ik14) in zip(batch, results):
                 out_row = dict(row)
                 if canon_smi is not None:
                     out_row["smiles"] = canon_smi
-                out_row["inchikey14"] = compute_inchikey14(smi)
+                out_row["inchikey14"] = ik14
                 writer.writerow(out_row)
 
             rows_done += len(batch)
