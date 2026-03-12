@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N pubchem_canon
-#PBS -l select=1:ncpus=16:mem=256gb:scratch_local=40gb
+#PBS -l select=1:ncpus=48:mem=312gb:scratch_local=40gb
 #PBS -l walltime=48:00:00
 
 set -e
@@ -35,12 +35,12 @@ fi
 
 echo "Starting canonicalization at $(date)"
 echo "Input: $INPUT"
-echo "Workers: 16, Batch size: 500000"
+echo "Workers: 48, Batch size: 500000"
 
 python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     "$SCRATCHDIR/pubchem.tsv" \
     "$SCRATCHDIR/pubchem_canonicalized.tsv" \
-    --workers 16 \
+    --workers 48 \
     --batch-size 500000 \
     $RESUME_FLAG \
     2>&1 | tee "$SCRATCHDIR/pubchem_canon.log" || {
