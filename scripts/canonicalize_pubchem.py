@@ -18,6 +18,7 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import sys
 import time
 
@@ -58,9 +59,24 @@ def main():
         "--resume", action="store_true",
         help="Resume from where a previous run left off",
     )
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default=None,
+        help="Directory on persistent storage to checkpoint output after every batch. "
+             "Prevents data loss if the job crashes.",
+    )
     args = parser.parse_args()
 
     progress_path = args.output + ".progress.json"
+
+    # Persistent checkpoint paths (on reliable storage, not scratch)
+    if args.checkpoint_dir:
+        os.makedirs(args.checkpoint_dir, exist_ok=True)
+        basename = os.path.basename(args.output)
+        checkpoint_output = os.path.join(args.checkpoint_dir, basename)
+        checkpoint_progress = checkpoint_output + ".progress.json"
+    else:
+        checkpoint_output = None
+        checkpoint_progress = None
 
     # Detect header from input
     with open(args.input, newline="") as f:
@@ -146,8 +162,13 @@ def main():
             total_rows += len(batch)
             fout.flush()
 
-            # Save progress after each batch
+            # Save progress after each batch (scratch — fast)
             _save_progress(progress_path, rows_done)
+
+            # Checkpoint to persistent storage so we never lose work
+            if checkpoint_output:
+                shutil.copy2(args.output, checkpoint_output)
+                _save_progress(checkpoint_progress, rows_done)
 
             elapsed = time.time() - t0
             rate = total_rows / elapsed if elapsed > 0 else 0
