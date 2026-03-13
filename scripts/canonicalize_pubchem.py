@@ -64,6 +64,11 @@ def main():
         help="Directory on persistent storage to checkpoint output after every batch. "
              "Prevents data loss if the job crashes.",
     )
+    parser.add_argument(
+        "--checkpoint-name", type=str, default=None,
+        help="Filename for checkpoint (default: basename of output). "
+             "Use when scratch output name differs from desired persistent name.",
+    )
     args = parser.parse_args()
 
     progress_path = args.output + ".progress.json"
@@ -71,7 +76,7 @@ def main():
     # Persistent checkpoint paths (on reliable storage, not scratch)
     if args.checkpoint_dir:
         os.makedirs(args.checkpoint_dir, exist_ok=True)
-        basename = os.path.basename(args.output)
+        basename = args.checkpoint_name or os.path.basename(args.output)
         checkpoint_output = os.path.join(args.checkpoint_dir, basename)
         checkpoint_progress = checkpoint_output + ".progress.json"
     else:

@@ -2,8 +2,8 @@
 #PBS -N canon_4M
 #PBS -l select=1:ncpus=16:mem=16gb:scratch_local=10gb
 #PBS -l walltime=8:00:00
-
-set -e
+#PBS -o /storage/plzen1/home/jozefov_147/projects/msngym/data/candidates_generation/pubchem_canon_molecules/canon_4M.stdout
+#PBS -e /storage/plzen1/home/jozefov_147/projects/msngym/data/candidates_generation/pubchem_canon_molecules/canon_4M.stderr
 
 PLZEN_HOME=/storage/plzen1/home/jozefov_147
 ENV_PREFIX=$PLZEN_HOME/.conda/envs/chembl_pipeline
@@ -21,20 +21,36 @@ mamba activate "$ENV_PREFIX"
 
 cp "$INPUT" "$SCRATCHDIR/input.tsv" || exit 2
 
+# Copy partial output if resuming
+if [ -f "$OUTPUT" ]; then
+    cp "$OUTPUT" "$SCRATCHDIR/output.tsv"
+fi
+if [ -f "$OUTPUT.progress.json" ]; then
+    cp "$OUTPUT.progress.json" "$SCRATCHDIR/output.tsv.progress.json"
+    RESUME_FLAG="--resume"
+else
+    RESUME_FLAG=""
+fi
+
 echo "Starting canonicalization of 4M dataset at $(date)"
 
-# Run python — tee stdout to log, keep stderr visible to PBS
 python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     "$SCRATCHDIR/input.tsv" \
     "$SCRATCHDIR/output.tsv" \
     --workers 16 \
     --batch-size 500000 \
-    2>&1 | tee "$SCRATCHDIR/canon_4M.log" || {
-    cp "$SCRATCHDIR/canon_4M.log" "$DATA_DIR/canon_4M.log" 2>/dev/null
-    exit 3
-}
+    --checkpoint-dir "$DATA_DIR" \
+    --checkpoint-name "MassSpecGym_retrieval_molecules_4M_canonicalized.tsv" \
+    $RESUME_FLAG \
+    2>&1 | tee "$SCRATCHDIR/canon_4M.log"
 
-cp "$SCRATCHDIR/output.tsv" "$OUTPUT" || exit 4
-cp "$SCRATCHDIR/canon_4M.log" "$DATA_DIR/canon_4M.log" || exit 5
+EXIT_CODE=${PIPESTATUS[0]}
+
+# Always copy results back
+cp "$SCRATCHDIR/output.tsv" "$OUTPUT" 2>/dev/null
+cp "$SCRATCHDIR/output.tsv.progress.json" "$OUTPUT.progress.json" 2>/dev/null
+cp "$SCRATCHDIR/canon_4M.log" "$DATA_DIR/canon_4M.log" 2>/dev/null
+
 echo "Done at $(date)"
 clean_scratch
+exit $EXIT_CODE
