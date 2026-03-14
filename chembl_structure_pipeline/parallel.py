@@ -90,17 +90,42 @@ def _worker_standardize_smiles(chunk):
 
 
 def _worker_standardize_smiles_with_inchikey(chunk):
-    """Process a list of (index, smiles) tuples, returning (canon_smi, inchikey14)."""
+    """Process a list of (index, smiles) tuples, returning (canon_smi, inchikey14).
+
+    Each molecule gets a 60-second timeout. If standardization hangs
+    (e.g. pathological ring perception), the original SMILES is kept.
+    """
+    import signal
     from . import standardizer
     from rdkit import Chem
     from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
 
+    class _Timeout(Exception):
+        pass
+
+    def _handler(signum, frame):
+        raise _Timeout()
+
+    # Only set alarm on platforms that support it (not Windows)
+    has_alarm = hasattr(signal, 'SIGALRM')
+
     results = []
     for idx, smi in chunk:
+        canon = None
+        if has_alarm:
+            old_handler = signal.signal(signal.SIGALRM, _handler)
+            signal.alarm(60)  # 60-second timeout per molecule
         try:
             canon = standardizer.standardize_and_canonicalize_smiles(smi)
+        except _Timeout:
+            canon = None  # keep original SMILES
         except Exception:
             canon = None
+        finally:
+            if has_alarm:
+                signal.alarm(0)  # cancel alarm
+                signal.signal(signal.SIGALRM, old_handler)
+
         # Compute InChIKey14 from canonical (or original) SMILES
         use_smi = canon if canon is not None else smi
         ik14 = ""
