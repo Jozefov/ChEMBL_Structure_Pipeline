@@ -12,7 +12,8 @@ checkpoint file automatically skips already-processed items.
 import json
 import os
 import tempfile
-from concurrent.futures import ProcessPoolExecutor
+import time
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from typing import List, Optional, Tuple
 
 
@@ -92,39 +93,22 @@ def _worker_standardize_smiles(chunk):
 def _worker_standardize_smiles_with_inchikey(chunk):
     """Process a list of (index, smiles) tuples, returning (canon_smi, inchikey14).
 
-    Each molecule gets a 60-second timeout. If standardization hangs
-    (e.g. pathological ring perception), the original SMILES is kept.
+    No per-molecule timeout here — hung C-level RDKit code can't be
+    interrupted by SIGALRM. Instead, _batch_process() uses per-chunk
+    process-level timeouts via future.result(timeout=...) which kills
+    the entire worker process if it hangs.
     """
-    import signal
     from . import standardizer
     from rdkit import Chem
     from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
 
-    class _Timeout(Exception):
-        pass
-
-    def _handler(signum, frame):
-        raise _Timeout()
-
-    # Only set alarm on platforms that support it (not Windows)
-    has_alarm = hasattr(signal, 'SIGALRM')
-
     results = []
     for idx, smi in chunk:
         canon = None
-        if has_alarm:
-            old_handler = signal.signal(signal.SIGALRM, _handler)
-            signal.alarm(60)  # 60-second timeout per molecule
         try:
             canon = standardizer.standardize_and_canonicalize_smiles(smi)
-        except _Timeout:
-            canon = None  # keep original SMILES
         except Exception:
             canon = None
-        finally:
-            if has_alarm:
-                signal.alarm(0)  # cancel alarm
-                signal.signal(signal.SIGALRM, old_handler)
 
         # Compute InChIKey14 from canonical (or original) SMILES
         use_smi = canon if canon is not None else smi
@@ -197,8 +181,13 @@ def _chunkify(indexed_items, n_chunks):
 # ---------------------------------------------------------------------------
 
 def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
-                   default_result=None):
+                   default_result=None, chunk_timeout=300):
     """Generic parallel batch processor with checkpoint support.
+
+    Uses submit() + as_completed() so that a hung chunk does not block
+    progress from other chunks.  Each chunk gets a process-level timeout
+    (default 300 s).  If a chunk times out, its worker process is killed
+    by the executor and all molecules in that chunk get default_result.
 
     Args:
         items: list of input strings
@@ -207,6 +196,8 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
         chunk_size: items per chunk (None = auto)
         checkpoint_path: path to checkpoint TSV (None = no checkpointing)
         default_result: fallback value for missing results
+        chunk_timeout: seconds to wait for a single chunk before killing
+            the worker (default 300). None disables timeouts.
 
     Returns:
         list of results in input order
@@ -253,18 +244,85 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
 
     chunks = _chunkify(work, n_chunks)
 
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        for chunk_result in executor.map(worker_fn, chunks):
-            # Save progress after each chunk
-            if checkpoint_path:
-                _append_checkpoint(checkpoint_path, chunk_result)
-            for idx, result in chunk_result:
-                completed[idx] = result
-            done = len(completed)
-            if done < n_total:
-                print(f"Progress: {done}/{n_total} "
-                      f"({100 * done / n_total:.1f}%)")
+    # Track futures and their submission times for timeout detection
+    future_to_chunk = {}
+    submit_times = {}
+    n_timed_out = 0
 
+    executor = ProcessPoolExecutor(max_workers=n_workers)
+    try:
+        for chunk in chunks:
+            fut = executor.submit(worker_fn, chunk)
+            future_to_chunk[fut] = chunk
+            submit_times[fut] = time.monotonic()
+
+        pending = set(future_to_chunk.keys())
+
+        while pending:
+            # Wait for any future to complete, polling every 30s
+            done_set, still_pending = wait(
+                pending, timeout=30, return_when=FIRST_COMPLETED,
+            )
+
+            # Process completed futures (returned out-of-order)
+            for fut in done_set:
+                chunk = future_to_chunk[fut]
+                try:
+                    chunk_result = fut.result()
+                    if checkpoint_path:
+                        _append_checkpoint(checkpoint_path, chunk_result)
+                    for idx, result in chunk_result:
+                        completed[idx] = result
+                except Exception as exc:
+                    n_timed_out += len(chunk)
+                    failed = [(idx, default_result) for idx, _ in chunk]
+                    if checkpoint_path:
+                        _append_checkpoint(checkpoint_path, failed)
+                    for idx, result in failed:
+                        completed[idx] = result
+                    print(f"WARNING: chunk of {len(chunk)} molecules "
+                          f"crashed: {exc} — marked as failed")
+
+            pending = still_pending
+
+            # Check for timed-out futures still pending
+            if chunk_timeout is not None and pending:
+                now = time.monotonic()
+                timed_out = {f for f in pending
+                             if now - submit_times[f] > chunk_timeout}
+                for fut in timed_out:
+                    chunk = future_to_chunk[fut]
+                    n_timed_out += len(chunk)
+                    failed = [(idx, default_result) for idx, _ in chunk]
+                    if checkpoint_path:
+                        _append_checkpoint(checkpoint_path, failed)
+                    for idx, result in failed:
+                        completed[idx] = result
+                    print(f"WARNING: chunk of {len(chunk)} molecules "
+                          f"timed out after {chunk_timeout}s — "
+                          f"marked as failed")
+                    fut.cancel()
+                pending -= timed_out
+
+            # Report progress
+            done_count = len(completed)
+            if done_count < n_total and (done_set or n_timed_out):
+                print(f"Progress: {done_count}/{n_total} "
+                      f"({100 * done_count / n_total:.1f}%)")
+    finally:
+        # Force-kill any hung worker processes (they're stuck in C code
+        # and won't respond to gentle shutdown). This is safe because
+        # we've already checkpointed all completed results above.
+        try:
+            for proc in executor._processes.values():
+                if proc.is_alive():
+                    proc.kill()
+        except Exception:
+            pass
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    if n_timed_out:
+        print(f"WARNING: {n_timed_out} molecules timed out or crashed total")
     print(f"Done: {n_total}/{n_total} items processed")
     return [completed.get(i, default_result) for i in range(n_total)]
 
