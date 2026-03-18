@@ -181,7 +181,7 @@ def _chunkify(indexed_items, n_chunks):
 # ---------------------------------------------------------------------------
 
 def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
-                   default_result=None, chunk_timeout=1800):
+                   default_result=None, chunk_timeout=7200):
     """Generic parallel batch processor with checkpoint support.
 
     Uses submit() + as_completed() so that a hung chunk does not block
