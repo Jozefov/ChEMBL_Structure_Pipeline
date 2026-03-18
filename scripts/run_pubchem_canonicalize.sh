@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N pubchem_canon
-#PBS -l select=1:ncpus=32:mem=128gb:scratch_local=40gb
+#PBS -l select=1:ncpus=48:mem=182gb:scratch_local=40gb
 #PBS -l walltime=48:00:00
 #PBS -o /storage/plzen1/home/jozefov_147/projects/msngym/data/candidates_generation/pubchem_canon_molecules/pubchem_canon.stdout
 #PBS -e /storage/plzen1/home/jozefov_147/projects/msngym/data/candidates_generation/pubchem_canon_molecules/pubchem_canon.stderr
@@ -35,14 +35,14 @@ fi
 
 echo "Starting canonicalization at $(date)"
 echo "Input: $INPUT"
-echo "Workers: 32, Batch size: 500000"
+echo "Workers: 48, Batch size: 500000"
 
 # Run canonicalization — write to BOTH scratch (fast) and persistent storage (safe)
 # The --checkpoint-dir flag saves progress to persistent storage after every batch
 python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     "$SCRATCHDIR/pubchem.tsv" \
     "$SCRATCHDIR/pubchem_canonicalized.tsv" \
-    --workers 32 \
+    --workers 48 \
     --batch-size 500000 \
     --checkpoint-dir "$OUTPUT_DIR" \
     $RESUME_FLAG \
