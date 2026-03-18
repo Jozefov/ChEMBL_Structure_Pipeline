@@ -181,7 +181,7 @@ def _chunkify(indexed_items, n_chunks):
 # ---------------------------------------------------------------------------
 
 def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
-                   default_result=None, chunk_timeout=300):
+                   default_result=None, chunk_timeout=1800):
     """Generic parallel batch processor with checkpoint support.
 
     Uses submit() + as_completed() so that a hung chunk does not block
@@ -197,7 +197,7 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
         checkpoint_path: path to checkpoint TSV (None = no checkpointing)
         default_result: fallback value for missing results
         chunk_timeout: seconds to wait for a single chunk before killing
-            the worker (default 300). None disables timeouts.
+            the worker (default 1800). None disables timeouts.
 
     Returns:
         list of results in input order
@@ -238,8 +238,10 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
         n_chunks = max(1, -(-len(work) // chunk_size))
     else:
         # Use small chunks for better load balancing with variable-complexity
-        # molecules (avoids straggler chunks blocking idle workers)
-        chunk_size = 2000
+        # molecules (avoids straggler chunks blocking idle workers).
+        # 500 keeps individual chunk runtime short even when many molecules
+        # hit the tautomer enumeration limit (maxTransforms=1000).
+        chunk_size = 500
         n_chunks = max(1, -(-len(work) // chunk_size))
 
     chunks = _chunkify(work, n_chunks)
