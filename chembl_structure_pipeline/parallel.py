@@ -244,17 +244,29 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
 
     chunks = _chunkify(work, n_chunks)
 
-    # Track futures and their submission times for timeout detection
+    # Submit chunks in waves of n_workers to avoid the timeout-from-
+    # submission-time bug.  Previously all chunks were submitted up front
+    # and the timeout was measured from submission, not execution start.
+    # Chunks queued behind busy workers would sit in the queue, exceed the
+    # timeout before they even started, and get killed as "timed out".
+    #
+    # Now we submit at most n_workers chunks at a time, wait for any to
+    # finish, and refill the pool.  Every in-flight chunk is actually
+    # running on a worker, so the timeout is meaningful.
     future_to_chunk = {}
     submit_times = {}
     n_timed_out = 0
+    n_ok = 0
+    n_fail = 0
 
     executor = ProcessPoolExecutor(max_workers=n_workers)
     try:
-        for chunk in chunks:
+        # Initial fill: submit up to n_workers chunks
+        for chunk in chunks[:n_workers]:
             fut = executor.submit(worker_fn, chunk)
             future_to_chunk[fut] = chunk
             submit_times[fut] = time.monotonic()
+        next_chunk_idx = n_workers
 
         pending = set(future_to_chunk.keys())
 
@@ -273,8 +285,10 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
                         _append_checkpoint(checkpoint_path, chunk_result)
                     for idx, result in chunk_result:
                         completed[idx] = result
+                    n_ok += len(chunk)
                 except Exception as exc:
                     n_timed_out += len(chunk)
+                    n_fail += len(chunk)
                     failed = [(idx, default_result) for idx, _ in chunk]
                     if checkpoint_path:
                         _append_checkpoint(checkpoint_path, failed)
@@ -293,6 +307,7 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
                 for fut in timed_out:
                     chunk = future_to_chunk[fut]
                     n_timed_out += len(chunk)
+                    n_fail += len(chunk)
                     failed = [(idx, default_result) for idx, _ in chunk]
                     if checkpoint_path:
                         _append_checkpoint(checkpoint_path, failed)
@@ -304,11 +319,23 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
                     fut.cancel()
                 pending -= timed_out
 
+            # Refill: submit new chunks to replace completed/timed-out ones
+            free_slots = n_workers - len(pending)
+            while free_slots > 0 and next_chunk_idx < len(chunks):
+                chunk = chunks[next_chunk_idx]
+                next_chunk_idx += 1
+                fut = executor.submit(worker_fn, chunk)
+                future_to_chunk[fut] = chunk
+                submit_times[fut] = time.monotonic()
+                pending.add(fut)
+                free_slots -= 1
+
             # Report progress
             done_count = len(completed)
             if done_count < n_total and (done_set or n_timed_out):
-                print(f"Progress: {done_count}/{n_total} "
-                      f"({100 * done_count / n_total:.1f}%)")
+                print(f"  Progress: {done_count}/{n_total} "
+                      f"({100 * done_count / n_total:.1f}%) | "
+                      f"{n_ok} ok, {n_fail} failed")
     finally:
         # Force-kill any hung worker processes (they're stuck in C code
         # and won't respond to gentle shutdown). This is safe because
@@ -323,7 +350,8 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
 
     if n_timed_out:
         print(f"WARNING: {n_timed_out} molecules timed out or crashed total")
-    print(f"Done: {n_total}/{n_total} items processed")
+    print(f"Done: {n_total}/{n_total} items processed "
+          f"({n_ok} ok, {n_fail} failed)")
     return [completed.get(i, default_result) for i in range(n_total)]
 
 
