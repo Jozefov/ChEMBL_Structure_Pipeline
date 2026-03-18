@@ -7,6 +7,9 @@
 #  which is included in the file LICENSE, found at the root
 #  of the source tree.
 import os
+import tempfile
+from functools import lru_cache
+from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from rdkit.Chem import rdMolTransforms
@@ -59,26 +62,65 @@ _normalizer = rdMolStandardize.NormalizerFromData(
 
 _alkoxide_pattern = Chem.MolFromSmarts("[Li,Na,K;+0]-[#7,#8;+0]")
 
-# Stereo-safe tautomer enumerator with capped enumeration for speed.
+# --- Fast tautomer canonicalizer (2 transforms only) ---
 #
-# The default RDKit TautomerEnumerator tries to generate up to 1000
-# tautomers per molecule, which causes hangs on complex structures.
-# The actual slowness comes from this combinatorial explosion, not from
-# the number of chemical rules. By capping maxTautomers and maxTransforms
-# to 50, we keep ALL ~30 tautomer rules (1,3-shifts, 1,5-shifts, imine/
-# enamine, aromatic tautomers like 2-pyridone ↔ 2-hydroxypyridine, etc.)
-# but stop exploring early on pathological molecules.
+# Uses only 1,3-heteroatom H shift and 1,3-(thio)keto/enol transforms
+# instead of RDKit's full ~30 transforms. This avoids combinatorial
+# explosion on complex molecules while still canonicalizing the most
+# common tautomeric forms.
+#
+# Two code paths depending on RDKit version:
+#   v1 (older): rdkit.Chem.MolStandardize.tautomer.TautomerCanonicalizer
+#   v2 (newer): rdkit.Chem.MolStandardize.rdMolStandardize.TautomerEnumerator
 #
 # CRITICAL: tautomerRemoveSp3Stereo and tautomerRemoveBondStereo must be
 # False. RDKit defaults have these True, which merges enantiomers (e.g.
 # L-alanine and D-alanine become the same SMILES).
-_tautomer_params = rdMolStandardize.CleanupParameters()
-_tautomer_params.tautomerRemoveSp3Stereo = False
-_tautomer_params.tautomerRemoveBondStereo = False
-_tautomer_params.tautomerRemoveIsotopicHs = False
-_tautomer_params.maxTautomers = 1000  # default 1000 — cap the explosion
-_tautomer_params.maxTransforms = 1000  # default 1000 — cap per-molecule steps
-_tautomer_enumerator = rdMolStandardize.TautomerEnumerator(_tautomer_params)
+
+try:
+    from rdkit.Chem.MolStandardize.tautomer import TautomerCanonicalizer, TautomerTransform
+    _RD_TAUTOMER_CANONICALIZER = 'v1'
+except (ModuleNotFoundError, ImportError):
+    _RD_TAUTOMER_CANONICALIZER = 'v2'
+
+
+@lru_cache(maxsize=1)
+def _get_tautomer_canonicalizer_v1():
+    from rdkit.Chem.MolStandardize.tautomer import TautomerCanonicalizer, TautomerTransform
+    transforms = (
+        TautomerTransform('1,3 heteroatom H shift',
+                          '[#7,S,O,Se,Te;!H0]-[#7X2,#6,#15]=[#7,#16,#8,Se,Te]'),
+        TautomerTransform('1,3 (thio)keto/enol r',
+                          '[O,S,Se,Te;X2!H0]-[C]=[C]'),
+    )
+    return TautomerCanonicalizer(transforms=transforms)
+
+
+@lru_cache(maxsize=1)
+def _get_tautomer_enumerator_v2():
+    tautomer_transform_path = Path(tempfile.gettempdir()) / \
+        f"chembl_pipeline_tautomer_transforms_rdkit{rdkit.__version__}.txt"
+    if not tautomer_transform_path.exists():
+        with open(tautomer_transform_path, 'w') as f:
+            f.write(
+                "// Name\tSMARTS\tBonds\tCharges\n"
+                "1,3 hetero atom H shift\t[#7,S,O,Se,Te;!H0]-[#7X2,#6,#15]=[#7,#16,#8,Se,Te]\n"
+                "1,3 (thio)keto/enol r\t[O,S,Se,Te;X2!H0]-[C]=[C]\n"
+            )
+    p = rdMolStandardize.CleanupParameters()
+    p.tautomerTransformsFile = str(tautomer_transform_path)
+    p.tautomerRemoveSp3Stereo = False
+    p.tautomerRemoveBondStereo = False
+    p.tautomerRemoveIsotopicHs = False
+    return rdMolStandardize.TautomerEnumerator(p)
+
+
+def _canonicalize_tautomer(mol):
+    """Stereo-safe tautomer canonicalization using only 2 transforms."""
+    if _RD_TAUTOMER_CANONICALIZER == 'v1':
+        return _get_tautomer_canonicalizer_v1().canonicalize(mol)
+    else:
+        return _get_tautomer_enumerator_v2().Canonicalize(mol)
 
 
 def normalize_mol(m):
@@ -608,7 +650,7 @@ def standardize_and_canonicalize_mol(m, check_exclusion=False):
     m, _ = get_fragment_parent_mol(m, neutralize=True)
 
     # Step 3: Stereo-safe tautomer canonicalization
-    m = _tautomer_enumerator.Canonicalize(m)
+    m = _canonicalize_tautomer(m)
 
     return m
 
