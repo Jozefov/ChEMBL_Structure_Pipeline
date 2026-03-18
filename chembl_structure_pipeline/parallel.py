@@ -237,11 +237,9 @@ def _batch_process(items, worker_fn, n_workers, chunk_size, checkpoint_path,
     if chunk_size is not None:
         n_chunks = max(1, -(-len(work) // chunk_size))
     else:
-        # Use small chunks for better load balancing with variable-complexity
-        # molecules (avoids straggler chunks blocking idle workers).
-        # 500 keeps individual chunk runtime short even when many molecules
-        # hit the tautomer enumeration limit (maxTransforms=1000).
-        chunk_size = 500
+        # 10K per chunk balances load vs overhead.  If a chunk times out
+        # only these 10K molecules are lost, not the whole batch.
+        chunk_size = 10_000
         n_chunks = max(1, -(-len(work) // chunk_size))
 
     chunks = _chunkify(work, n_chunks)
