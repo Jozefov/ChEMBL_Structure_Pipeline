@@ -87,12 +87,15 @@ fi
 # 3. Check lbzip2 availability
 # ============================================================================
 
-if command -v lbzip2 &>/dev/null; then
+if command -v pbzip2 &>/dev/null; then
+    DECOMPRESS="pbzip2 -dc -p2"
+    echo "OK: pbzip2 available (parallel decompression)"
+elif command -v lbzip2 &>/dev/null; then
     DECOMPRESS="lbzip2 -dc -n 2"
     echo "OK: lbzip2 available"
 else
     DECOMPRESS="bzcat"
-    echo "WARN: lbzip2 not found, falling back to bzcat"
+    echo "WARN: no parallel decompressor found, falling back to bzcat"
 fi
 
 # ============================================================================

@@ -105,9 +105,10 @@ fi
 # Main processing
 # ============================================================================
 
-# Use lbzip2 for parallel decompression (2 threads)
+# Use pbzip2 for parallel decompression (2 threads)
 # Remaining 16 CPUs for RDKit workers
-lbzip2 -dc -n 2 "$INPUT_FILE" \
+# Note: lbzip2 not available on MetaCentrum, pbzip2 is
+pbzip2 -dc -p2 "$INPUT_FILE" \
     | python3 "$REPO_DIR/scripts/enamine_process.py" \
         --output-dir "$PERSISTENT_OUT" \
         --scratch-dir "$SCRATCH_OUT" \
@@ -115,6 +116,7 @@ lbzip2 -dc -n 2 "$INPUT_FILE" \
         --batch-size 100000 \
         --chunk-size 5000 \
         --chunk-timeout 3600 \
+        --skip-header \
         $RESUME_FLAG \
     2>&1 | tee "$SCRATCH_OUT/processing.log"
 
