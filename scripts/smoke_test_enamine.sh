@@ -15,7 +15,7 @@
 #PBS -l walltime=00:30:00
 #PBS -j oe
 
-set -euo pipefail
+# No set -e: conda activate and pipe commands can return non-zero spuriously
 
 # ============================================================================
 # Configuration
@@ -37,9 +37,9 @@ OUTPUT_DIR="${SCRATCHDIR:-/tmp}/enamine_smoke_test"
 # Setup
 # ============================================================================
 
-module add mambaforge 2>/dev/null || true
+module add mambaforge 2>/dev/null
 export CONDA_PKGS_DIRS="${SCRATCHDIR:-/tmp}/conda_pkgs"
-mamba activate "$CONDA_ENV" 2>/dev/null || conda activate "$CONDA_ENV"
+mamba activate "$CONDA_ENV" 2>/dev/null || conda activate "$CONDA_ENV" 2>/dev/null
 
 export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 
@@ -70,12 +70,12 @@ echo "OK: Input file exists"
 
 echo ""
 echo "--- First 3 lines of input ---"
-bzcat "$INPUT" | head -3
+bzcat "$INPUT" 2>/dev/null | head -3 || true
 echo "--- End ---"
 echo ""
 
-FIRST_LINE=$(bzcat "$INPUT" | head -1)
-if echo "$FIRST_LINE" | grep -qi "smiles\|SMILES\|idnumber\|ID"; then
+FIRST_LINE=$(bzcat "$INPUT" 2>/dev/null | head -1 || true)
+if echo "$FIRST_LINE" | grep -qi "smiles"; then
     echo "DETECTED: File has a header line. Using --skip-header."
     SKIP_HEADER="--skip-header"
 else
@@ -103,8 +103,15 @@ fi
 # ============================================================================
 
 echo ""
-echo "Processing $N_LINES molecules..."
-$DECOMPRESS "$INPUT" | head -n "$N_LINES" | \
+echo "Extracting $N_LINES lines to temp file..."
+SAMPLE_FILE="$OUTPUT_DIR/sample.tsv"
+$DECOMPRESS "$INPUT" 2>/dev/null | head -n "$N_LINES" > "$SAMPLE_FILE" || true
+ACTUAL_LINES=$(wc -l < "$SAMPLE_FILE")
+echo "Extracted $ACTUAL_LINES lines"
+
+echo ""
+echo "Processing $ACTUAL_LINES molecules..."
+cat "$SAMPLE_FILE" | \
     python3 "$REPO_DIR/scripts/enamine_process.py" \
         --output-dir "$OUTPUT_DIR" \
         --workers "$N_WORKERS" \
@@ -112,6 +119,7 @@ $DECOMPRESS "$INPUT" | head -n "$N_LINES" | \
         --chunk-size 500 \
         --chunk-timeout 120 \
         $SKIP_HEADER
+rm -f "$SAMPLE_FILE"
 
 # ============================================================================
 # 5. Verify outputs
