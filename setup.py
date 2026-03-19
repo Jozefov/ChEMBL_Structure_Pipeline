@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="chembl_structure_pipeline",
@@ -7,7 +7,7 @@ setup(
     author="Greg Landrum, Eloy Félix",
     author_email="greg.landrum@t5informatics.com",
     license="MIT",
-    packages=["chembl_structure_pipeline"],
+    packages=find_packages(),
     package_data={"chembl_structure_pipeline": ["data/*"]},
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
