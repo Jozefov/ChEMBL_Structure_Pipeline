@@ -1,14 +1,15 @@
 #!/bin/bash
 # PBS job script for processing a single Enamine REAL file on MetaCentrum.
 #
+# Self-resubmitting: if the file isn't fully processed within the walltime
+# budget, the job stages out partial results and resubmits itself with
+# RESUME=1. This repeats until the file is done — no manual intervention.
+#
 # Usage:
 #   # Submit for a specific file:
-#   FILE_STEM="2025.02_Enamine_REAL_HAC_11_21_967M_CXSMILES" qsub scripts/run_enamine.sh
-#
-#   # Or with a short alias:
 #   FILE_STEM="HAC_11_21" qsub scripts/run_enamine.sh
 #
-#   # Resume an interrupted job:
+#   # Resume an interrupted job (manual):
 #   FILE_STEM="HAC_11_21" RESUME=1 qsub scripts/run_enamine.sh
 #
 # File stems (short form → full name):
@@ -38,6 +39,10 @@ PERSISTENT_OUT="${ENAMINE_DIR}/processed/${FILE_STEM}"
 CONDA_ENV="/storage/plzen1/home/jozefov_147/.conda/envs/chembl_pipeline"
 REPO_DIR="/storage/plzen1/home/jozefov_147/projects/ChEMBL_Structure_Pipeline"
 N_WORKERS=16
+
+# Time budget: stop processing 1 hour before walltime to allow stage-out
+# and self-resubmit. PBS walltime is 48h = 172800s, budget = 47h = 169200s.
+MAX_TIME=169200
 
 # Map short stems to full filenames
 declare -A FILE_MAP=(
@@ -77,6 +82,7 @@ echo "File:       $INPUT_FILE"
 echo "Output:     $PERSISTENT_OUT"
 echo "Scratch:    $SCRATCH_OUT"
 echo "Workers:    $N_WORKERS"
+echo "Max time:   ${MAX_TIME}s ($(( MAX_TIME / 3600 ))h)"
 echo "Start time: $(date)"
 echo "Node:       $(hostname)"
 echo "============================================"
@@ -94,6 +100,8 @@ fi
 RESUME_FLAG=""
 if [ "${RESUME:-0}" = "1" ] && [ -f "$PERSISTENT_OUT/checkpoint.json" ]; then
     echo "Resuming from checkpoint..."
+    cat "$PERSISTENT_OUT/checkpoint.json"
+    echo ""
     # Copy partial outputs from persistent storage to scratch
     for f in molecules.tsv.gz errors.tsv.gz; do
         [ -f "$PERSISTENT_OUT/$f" ] && cp "$PERSISTENT_OUT/$f" "$SCRATCH_OUT/$f"
@@ -116,6 +124,7 @@ pbzip2 -dc -p2 "$INPUT_FILE" \
         --batch-size 100000 \
         --chunk-size 5000 \
         --chunk-timeout 3600 \
+        --max-time "$MAX_TIME" \
         --skip-header \
         $RESUME_FLAG \
     2>&1 | tee "$SCRATCH_OUT/processing.log"
@@ -134,6 +143,26 @@ for f in molecules.tsv.gz errors.tsv.gz processing.log; do
         echo "  Copied $f"
     fi
 done
+
+# ============================================================================
+# Self-resubmit if not finished (exit code 42 = time budget exhausted)
+# ============================================================================
+
+if [ "$EXIT_CODE" -eq 42 ]; then
+    echo ""
+    echo "============================================"
+    echo "Time budget exhausted — resubmitting with resume..."
+    echo "============================================"
+    NEXT_JOB=$(qsub -v "FILE_STEM=${FILE_STEM},RESUME=1" \
+        -N "enamine_${FILE_STEM}" \
+        "$REPO_DIR/scripts/run_enamine.sh")
+    echo "Resubmitted as: $NEXT_JOB"
+    echo "============================================"
+    # Exit 0 so the chain dependency (afterany) considers this job "done"
+    # and doesn't prematurely release the next file's job.
+    # The resubmitted resume job runs independently of the chain.
+    EXIT_CODE=0
+fi
 
 echo ""
 echo "============================================"

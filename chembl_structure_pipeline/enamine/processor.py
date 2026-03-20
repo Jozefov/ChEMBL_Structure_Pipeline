@@ -105,6 +105,7 @@ def process_enamine_stream(
     smiles_column=0,
     skip_header=False,
     resume_from=0,
+    max_time=None,
 ):
     """Stream-process Enamine CXSMILES input to aligned output files.
 
@@ -121,9 +122,13 @@ def process_enamine_stream(
         smiles_column: 0-based column index for SMILES in input TSV.
         skip_header: Skip the first input line.
         resume_from: Number of input lines already processed (for resume).
+        max_time: Maximum processing time in seconds. If set, the processor
+            will stop gracefully after this time and set "completed" to False
+            in the returned stats (for self-resubmit support).
 
     Returns:
-        dict with processing statistics.
+        dict with processing statistics. Key "completed" is True if all
+        input was consumed, False if stopped due to max_time.
     """
     if scratch_dir is None:
         scratch_dir = output_dir
@@ -182,6 +187,7 @@ def process_enamine_stream(
               f"(continuing from line {resume_from})")
 
     t0 = time.time()
+    completed = True  # True if all input consumed, False if stopped by max_time
 
     # Open all output files
     f_tsv = gzip.open(tsv_path, tsv_mode)
@@ -199,6 +205,13 @@ def process_enamine_stream(
 
         batch_num = 0
         while True:
+            # Check time budget before starting a new batch
+            if max_time is not None and (time.time() - t0) >= max_time:
+                print(f"\nTime budget exhausted ({max_time}s). "
+                      f"Stopping gracefully for resubmit.")
+                completed = False
+                break
+
             # Read a batch of lines from stdin
             batch_lines = []
             for _ in range(batch_size):
@@ -273,6 +286,7 @@ def process_enamine_stream(
         "lines_processed": lines_processed,
         "n_molecules": total_ok,
         "n_errors": total_errors,
+        "completed": completed,
         "processing_time_s": round(elapsed, 1),
         "mol_per_s": round((total_ok + total_errors) / max(elapsed, 1), 1),
         "n_workers": n_workers,
@@ -284,13 +298,19 @@ def process_enamine_stream(
         "fp_packed_width": PACKED_WIDTH,
     }
 
-    # Write meta.json
-    meta_path = os.path.join(output_dir, "meta.json")
-    with open(meta_path, "w") as f:
-        json.dump(stats, f, indent=2)
-
-    print(f"\nFinished: {lines_processed} lines in {elapsed:.1f}s "
-          f"({total_ok} ok, {total_errors} errors)")
+    # Write meta.json (only on full completion — partial runs keep checkpoint)
+    if completed:
+        meta_path = os.path.join(output_dir, "meta.json")
+        with open(meta_path, "w") as f:
+            json.dump(stats, f, indent=2)
+        # Remove checkpoint on successful completion
+        if os.path.exists(checkpoint_path):
+            os.unlink(checkpoint_path)
+        print(f"\nCompleted: {lines_processed} lines in {elapsed:.1f}s "
+              f"({total_ok} ok, {total_errors} errors)")
+    else:
+        print(f"\nStopped (time budget): {lines_processed} lines in {elapsed:.1f}s "
+              f"({total_ok} ok, {total_errors} errors). Resume to continue.")
 
     return stats
 

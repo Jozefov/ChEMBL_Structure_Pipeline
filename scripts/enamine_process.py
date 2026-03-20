@@ -64,6 +64,11 @@ def main():
         "--resume", action="store_true",
         help="Resume from checkpoint (skips already-processed lines)",
     )
+    parser.add_argument(
+        "--max-time", type=int, default=None,
+        help="Maximum processing time in seconds. Exits gracefully with "
+             "code 42 when exceeded, so the job script can resubmit.",
+    )
     args = parser.parse_args()
 
     # Import here to avoid slow RDKit import when just checking --help
@@ -80,12 +85,17 @@ def main():
         chunk_timeout=args.chunk_timeout,
         smiles_column=args.smiles_column,
         skip_header=args.skip_header,
-        resume_from=0 if not args.resume else 0,  # processor auto-loads checkpoint
+        resume_from=0,  # processor auto-loads checkpoint if --resume
+        max_time=args.max_time,
     )
 
     print(f"\nOutput: {args.output_dir}")
     if args.scratch_dir:
         print(f"Scratch (stage out needed): {args.scratch_dir}")
+
+    # Exit code 42 = "not finished, needs resubmit"
+    if not stats.get("completed", True):
+        sys.exit(42)
 
 
 if __name__ == "__main__":
