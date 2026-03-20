@@ -116,6 +116,10 @@ fi
 # Use pbzip2 for parallel decompression (2 threads)
 # Remaining 16 CPUs for RDKit workers
 # Note: lbzip2 not available on MetaCentrum, pbzip2 is
+# Redirect all output to log file (not PBS stdout) to avoid filling node quota.
+# PBS .OU files accumulate on the compute node's local disk and are quota-limited.
+LOG_FILE="$SCRATCH_OUT/processing.log"
+
 pbzip2 -dc -p2 "$INPUT_FILE" \
     | python3 "$REPO_DIR/scripts/enamine_process.py" \
         --output-dir "$PERSISTENT_OUT" \
@@ -127,9 +131,15 @@ pbzip2 -dc -p2 "$INPUT_FILE" \
         --max-time "$MAX_TIME" \
         --skip-header \
         $RESUME_FLAG \
-    2>&1 | tee "$SCRATCH_OUT/processing.log"
+    > "$LOG_FILE" 2>&1
 
 EXIT_CODE=${PIPESTATUS[1]}
+
+# Show last 20 lines of log in PBS output (small enough for quota)
+echo ""
+echo "--- Last 20 lines of processing log ---"
+tail -20 "$LOG_FILE"
+echo "--- End ---"
 
 # ============================================================================
 # Stage out from scratch to persistent storage
