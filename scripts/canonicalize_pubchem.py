@@ -2,9 +2,11 @@
 """Canonicalize SMILES in a TSV file using ChEMBL Structure Pipeline.
 
 Reads any TSV with a 'smiles' column, standardizes and canonicalizes
-SMILES in parallel, adds an inchikey14 column, and preserves all
-original columns. Molecules that fail standardization keep their
-original SMILES.
+SMILES in parallel, then computes all molecular properties from the
+canonical SMILES: formula, monoisotopic mass, InChIKey, and InChIKey 2D
+(first 14 characters). Molecules that fail canonicalization are dropped.
+
+Output columns (fixed schema): smiles, formula, mass, inchikey, inchi_key_2D
 
 Processes data in streaming chunks to keep memory usage constant
 regardless of file size.
@@ -22,7 +24,9 @@ import shutil
 import sys
 import time
 
-from chembl_structure_pipeline.parallel import batch_standardize_smiles_with_inchikey
+from chembl_structure_pipeline.parallel import batch_standardize_full
+
+OUTPUT_COLUMNS = ["smiles", "formula", "mass", "inchikey", "inchi_key_2D"]
 
 
 def _load_progress(progress_path):
@@ -30,15 +34,15 @@ def _load_progress(progress_path):
     if progress_path and os.path.exists(progress_path):
         with open(progress_path) as f:
             data = json.load(f)
-            return data.get("rows_done", 0)
-    return 0
+            return data.get("rows_done", 0), data.get("rows_written", 0)
+    return 0, 0
 
 
-def _save_progress(progress_path, rows_done):
+def _save_progress(progress_path, rows_done, rows_written):
     """Save progress to file."""
     if progress_path:
         with open(progress_path, "w") as f:
-            json.dump({"rows_done": rows_done}, f)
+            json.dump({"rows_done": rows_done, "rows_written": rows_written}, f)
 
 
 def main():
@@ -83,7 +87,7 @@ def main():
         checkpoint_output = None
         checkpoint_progress = None
 
-    # Detect header from input
+    # Verify input has a smiles column
     with open(args.input, newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         input_fieldnames = list(reader.fieldnames)
@@ -92,16 +96,13 @@ def main():
         print("Error: input TSV must have a 'smiles' column", file=sys.stderr)
         sys.exit(1)
 
-    output_fieldnames = input_fieldnames + (
-        ["inchikey14"] if "inchikey14" not in input_fieldnames else []
-    )
-
     # Resume support: skip already-processed rows
     rows_done = 0
+    rows_written = 0
     if args.resume:
-        rows_done = _load_progress(progress_path)
+        rows_done, rows_written = _load_progress(progress_path)
         if rows_done > 0:
-            print(f"Resuming from row {rows_done}")
+            print(f"Resuming from row {rows_done} ({rows_written} written)")
 
     # Open output: append if resuming, write fresh otherwise
     write_mode = "a" if rows_done > 0 else "w"
@@ -115,7 +116,7 @@ def main():
          open(args.output, write_mode, newline="") as fout:
 
         reader = csv.DictReader(fin, delimiter="\t")
-        writer = csv.DictWriter(fout, fieldnames=output_fieldnames, delimiter="\t")
+        writer = csv.DictWriter(fout, fieldnames=OUTPUT_COLUMNS, delimiter="\t")
 
         if write_mode == "w":
             writer.writeheader()
@@ -143,47 +144,56 @@ def main():
             batch_num += 1
             smiles_list = [row["smiles"] for row in batch]
             print(f"Batch {batch_num}: processing {len(batch)} molecules "
-                  f"(rows {rows_done + 1}–{rows_done + len(batch)})...")
+                  f"(rows {rows_done + 1}\u2013{rows_done + len(batch)})...")
 
-            # Canonicalize and compute InChIKey14 in parallel
-            results = batch_standardize_smiles_with_inchikey(
+            # Canonicalize and compute all properties in parallel
+            results = batch_standardize_full(
                 smiles_list, n_workers=args.workers,
             )
 
-            n_ok = sum(1 for canon, _ in results if canon is not None)
-            n_fail = len(results) - n_ok
+            n_ok = 0
+            n_fail = 0
+
+            # Write results — drop failures
+            for result in results:
+                if result is None:
+                    n_fail += 1
+                    continue
+                canon_smi, formula, mass, inchikey, inchi_key_2d = result
+                writer.writerow({
+                    "smiles": canon_smi,
+                    "formula": formula,
+                    "mass": mass,
+                    "inchikey": inchikey,
+                    "inchi_key_2D": inchi_key_2d,
+                })
+                n_ok += 1
+                rows_written += 1
+
             total_ok += n_ok
             total_fail += n_fail
-
-            # Write results
-            for row, (canon_smi, ik14) in zip(batch, results):
-                out_row = dict(row)
-                if canon_smi is not None:
-                    out_row["smiles"] = canon_smi
-                out_row["inchikey14"] = ik14
-                writer.writerow(out_row)
 
             rows_done += len(batch)
             total_rows += len(batch)
             fout.flush()
 
             # Save progress after each batch (scratch — fast)
-            _save_progress(progress_path, rows_done)
+            _save_progress(progress_path, rows_done, rows_written)
 
             # Checkpoint to persistent storage so we never lose work
             if checkpoint_output:
                 shutil.copy2(args.output, checkpoint_output)
-                _save_progress(checkpoint_progress, rows_done)
+                _save_progress(checkpoint_progress, rows_done, rows_written)
 
             elapsed = time.time() - t0
             rate = total_rows / elapsed if elapsed > 0 else 0
-            print(f"  Done: {n_ok}/{len(batch)} ok, {n_fail} failed | "
-                  f"Total: {rows_done} rows, {rate:.0f} mol/s")
+            print(f"  Done: {n_ok}/{len(batch)} ok, {n_fail} dropped | "
+                  f"Total: {rows_done} read, {rows_written} written, {rate:.0f} mol/s")
 
     elapsed = time.time() - t0
     print(f"\nFinished: {total_ok + total_fail} molecules in {elapsed:.1f}s "
-          f"({total_ok} ok, {total_fail} failures kept original SMILES)")
-    print(f"Output: {args.output}")
+          f"({total_ok} ok, {total_fail} dropped)")
+    print(f"Output: {args.output} ({rows_written} rows)")
 
     # Clean up progress file on success
     if os.path.exists(progress_path):

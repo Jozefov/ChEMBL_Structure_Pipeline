@@ -125,6 +125,49 @@ def _worker_standardize_smiles_with_inchikey(chunk):
     return results
 
 
+def _worker_standardize_full(chunk):
+    """Process a list of (index, smiles) tuples, returning all molecular properties.
+
+    For each molecule: canonicalize, then compute formula, monoisotopic mass,
+    full InChIKey, and InChIKey 2D (first 14 chars) from the canonical SMILES.
+    Returns None for molecules that fail canonicalization (caller should drop them).
+    """
+    from . import standardizer
+    from rdkit import Chem
+    from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
+    from rdkit.Chem.rdMolDescriptors import CalcExactMolWt, CalcMolFormula
+
+    results = []
+    for idx, smi in chunk:
+        canon = None
+        try:
+            canon = standardizer.standardize_and_canonicalize_smiles(smi)
+        except Exception:
+            results.append((idx, None))
+            continue
+
+        if canon is None:
+            results.append((idx, None))
+            continue
+
+        try:
+            mol = Chem.MolFromSmiles(canon)
+            if mol is None:
+                results.append((idx, None))
+                continue
+            formula = CalcMolFormula(mol)
+            mass = CalcExactMolWt(mol)
+            inchi = MolToInchi(mol)
+            inchikey = InchiToInchiKey(inchi) if inchi else ""
+            inchi_key_2d = inchikey[:14] if inchikey else ""
+        except Exception:
+            results.append((idx, None))
+            continue
+
+        results.append((idx, (canon, formula, mass, inchikey, inchi_key_2d)))
+    return results
+
+
 def _worker_standardize_molblocks(chunk):
     from . import standardizer
     results = []
@@ -402,6 +445,29 @@ def batch_standardize_smiles_with_inchikey(
         smiles_list, _worker_standardize_smiles_with_inchikey,
         n_workers, chunk_size, checkpoint_path,
         default_result=(None, ""),
+    )
+
+
+def batch_standardize_full(
+    smiles_list: List[str],
+    n_workers: Optional[int] = None,
+    chunk_size: Optional[int] = None,
+    checkpoint_path: Optional[str] = None,
+) -> List[Optional[Tuple[str, str, float, str, str]]]:
+    """Standardize SMILES and compute all molecular properties in parallel.
+
+    For each molecule: canonicalize via ChEMBL Structure Pipeline, then compute
+    formula, monoisotopic mass, full InChIKey, and InChIKey 2D from the canonical
+    SMILES. Molecules that fail canonicalization return None.
+
+    Returns:
+        List of (canon_smiles, formula, mass, inchikey, inchi_key_2D) tuples
+        or None for failures, same order as input.
+    """
+    return _batch_process(
+        smiles_list, _worker_standardize_full,
+        n_workers, chunk_size, checkpoint_path,
+        default_result=None,
     )
 
 
