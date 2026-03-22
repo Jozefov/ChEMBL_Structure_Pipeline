@@ -50,17 +50,18 @@ def process_single_molecule(smi: str):
     if not clean_smi:
         return None
 
-    # 2. Canonicalize via ChEMBL pipeline
-    canon_smi = None
+    # 2. Canonicalize via ChEMBL pipeline — strict, no fallback
     try:
         canon_smi = standardizer.standardize_and_canonicalize_smiles(clean_smi)
     except Exception:
         canon_smi = None
 
-    # 3. Parse mol from canonical (fallback to original)
-    use_smi = canon_smi if canon_smi is not None else clean_smi
+    if canon_smi is None:
+        return None  # Canonicalization failed → molecule fails
+
+    # 3. Parse mol from canonical SMILES (the only valid source)
     try:
-        mol = Chem.MolFromSmiles(use_smi)
+        mol = Chem.MolFromSmiles(canon_smi)
     except Exception:
         mol = None
     if mol is None:
@@ -106,7 +107,7 @@ def process_single_molecule(smi: str):
         return None
 
     return (
-        canon_smi if canon_smi is not None else use_smi,
+        canon_smi,
         inchikey,
         inchikey14,
         formula,

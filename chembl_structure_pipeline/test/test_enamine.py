@@ -185,8 +185,16 @@ class TestProcessorIntegration:
             # Count TSV rows (excluding header)
             with gzip.open(tsv_path, "rt") as f:
                 lines_out = f.readlines()
-            assert lines_out[0].startswith("canonical_smiles")  # header
+            assert lines_out[0].startswith("original_smiles")  # header
             assert len(lines_out) == 5  # header + 4 data rows
+            # Verify header has all 6 columns
+            header_cols = lines_out[0].rstrip("\n").split("\t")
+            assert header_cols == ["original_smiles", "canonical_smiles", "inchikey",
+                                   "inchikey14", "molecular_formula", "monoisotopic_mass"]
+            # Verify data rows have original_smiles as first column
+            for data_line in lines_out[1:]:
+                fields = data_line.rstrip("\n").split("\t")
+                assert len(fields) == 6
 
             # Check bitsums are valid uint16
             with open(sums_path, "rb") as f:

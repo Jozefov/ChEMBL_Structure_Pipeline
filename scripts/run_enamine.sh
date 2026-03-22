@@ -62,11 +62,22 @@ FULL_STEM="${FILE_MAP[$FILE_STEM]:-$FILE_STEM}"
 INPUT_FILE="${ENAMINE_DIR}/${FULL_STEM}.cxsmiles.bz2"
 
 # ============================================================================
+# Cleanup stale PBS spool files from previous runs on this node
+# ============================================================================
+# PBS .OU/.ER files accumulate in /var/spool/pbs/undelivered/ and can fill
+# the node's ~1GB local quota. Clean up any old files from previous jobs.
+if [ -d /var/spool/pbs/undelivered ]; then
+    find /var/spool/pbs/undelivered -user "$USER" -type f -delete 2>/dev/null || true
+fi
+
+# ============================================================================
 # Environment setup
 # ============================================================================
 
 module add mambaforge
 export CONDA_PKGS_DIRS="$SCRATCHDIR/conda_pkgs"
+export TMPDIR="$SCRATCHDIR/tmp"
+mkdir -p "$TMPDIR"
 mamba activate "$CONDA_ENV" || conda activate "$CONDA_ENV"
 
 # Add repo to PYTHONPATH so scripts can import chembl_structure_pipeline

@@ -18,6 +18,7 @@ PACKED_WIDTH = (MORGAN_NBITS + 7) // 8  # 256 bytes per fingerprint
 
 # Output TSV column names
 TSV_COLUMNS = (
+    "original_smiles",
     "canonical_smiles",
     "inchikey",
     "inchikey14",

@@ -421,8 +421,9 @@ def _process_batch(
         result = results.get(i)
         if result is not None:
             canon_smi, inchikey, inchikey14, formula, mass, packed_fp = result
-            # Write TSV line
-            line = f"{canon_smi}\t{inchikey}\t{inchikey14}\t{formula}\t{mass}\n"
+            # Write TSV line (original_smiles from input, rest from canonical)
+            original_smi = batch_smiles[i]
+            line = f"{original_smi}\t{canon_smi}\t{inchikey}\t{inchikey14}\t{formula}\t{mass}\n"
             f_tsv.write(line.encode())
             # Collect fingerprint for binary write
             f_fps.write(packed_fp)

@@ -164,9 +164,9 @@ def _build_inchikey14_index(file_offsets, output_path):
             header = f.readline()  # skip header
             for line in f:
                 parts = line.rstrip("\n").split("\t")
-                # inchikey14 is column index 2 (canonical_smiles, inchikey, inchikey14, ...)
-                if len(parts) > 2 and parts[2]:
-                    entries.append((parts[2], dir_name, local_row))
+                # inchikey14 is column index 3 (original_smiles, canonical_smiles, inchikey, inchikey14, ...)
+                if len(parts) > 3 and parts[3]:
+                    entries.append((parts[3], dir_name, local_row))
                 local_row += 1
 
         print(f"  {dir_name}: {local_row:,} rows indexed")
