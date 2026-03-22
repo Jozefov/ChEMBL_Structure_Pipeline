@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from chembl_structure_pipeline.enamine import (
-    MORGAN_RADIUS, MORGAN_NBITS, PACKED_WIDTH, TSV_COLUMNS,
+    MORGAN_RADIUS, MORGAN_NBITS, PACKED_WIDTH,
 )
 from chembl_structure_pipeline.enamine.worker import (
     strip_cxsmiles,
@@ -214,6 +214,76 @@ class TestProcessorIntegration:
             with gzip.open(errors_path, "rt") as f:
                 err_lines = f.readlines()
             assert len(err_lines) == 2  # header + 1 error
+
+    def test_passthrough_columns(self):
+        """Verify Enamine-provided columns are preserved and aligned correctly."""
+        from chembl_structure_pipeline.enamine.processor import process_enamine_stream
+
+        # Simulate Enamine input with header + extra columns
+        # Columns: smiles, id, MW, HAC, sLogP, InChiKey
+        # smiles, MW, InChiKey should be dropped (we recompute them)
+        # id, HAC, sLogP should be preserved
+        input_lines = [
+            "smiles\tid\tMW\tHAC\tsLogP\tInChiKey\n",
+            "CCO\tENAMINE_001\t46.07\t3\t-0.31\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\n",
+            "INVALID_XYZ\tENAMINE_002\t999\t0\t0.0\tXXX\n",
+            "c1ccccc1\tENAMINE_003\t78.11\t6\t1.56\tYAJNKYAMK-UHFFFAOYSA-N\n",
+            "CC(=O)O\tENAMINE_004\t60.05\t4\t-0.17\tQTBSBAFTIJPBHG-UHFFFAOYSA-N\n",
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stats = process_enamine_stream(
+                input_lines=iter(input_lines),
+                output_dir=tmpdir,
+                n_workers=1,
+                batch_size=10,
+                chunk_size=10,
+                chunk_timeout=60,
+                skip_header=True,
+            )
+
+            assert stats["n_molecules"] == 3  # 1 invalid
+            assert stats["n_errors"] == 1
+
+            # Read output TSV
+            tsv_path = os.path.join(tmpdir, "molecules.tsv.gz")
+            with gzip.open(tsv_path, "rt") as f:
+                lines_out = f.readlines()
+
+            # Header should have core columns + passthrough (id, HAC, sLogP)
+            header_cols = lines_out[0].rstrip("\n").split("\t")
+            assert header_cols == [
+                "original_smiles", "canonical_smiles", "inchikey",
+                "inchikey14", "molecular_formula", "monoisotopic_mass",
+                "id", "HAC", "sLogP",
+            ]
+
+            # 3 data rows (1 invalid excluded)
+            assert len(lines_out) == 4  # header + 3 data
+
+            # Verify each data row has correct number of columns
+            for data_line in lines_out[1:]:
+                fields = data_line.rstrip("\n").split("\t")
+                assert len(fields) == 9  # 6 core + 3 passthrough
+
+            # Verify passthrough values are correct and aligned
+            row1 = lines_out[1].rstrip("\n").split("\t")
+            assert row1[6] == "ENAMINE_001"  # id preserved
+            assert row1[7] == "3"            # HAC preserved
+            assert row1[8] == "-0.31"        # sLogP preserved
+
+            # Row 2 should be ENAMINE_003 (ENAMINE_002 was invalid → errors)
+            row2 = lines_out[2].rstrip("\n").split("\t")
+            assert row2[6] == "ENAMINE_003"  # id preserved, not shifted
+            assert row2[7] == "6"            # HAC preserved
+
+            # Row 3 should be ENAMINE_004
+            row3 = lines_out[3].rstrip("\n").split("\t")
+            assert row3[6] == "ENAMINE_004"
+
+            # Verify alignment: 3 rows in TSV = 3 fingerprints
+            fps_size = os.path.getsize(os.path.join(tmpdir, "fingerprints.bin"))
+            assert fps_size == 3 * PACKED_WIDTH
 
     def test_resume(self):
         """Process in two halves and verify resume produces correct output."""

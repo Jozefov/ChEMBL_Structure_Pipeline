@@ -161,12 +161,17 @@ def _build_inchikey14_index(file_offsets, output_path):
 
         local_row = 0
         with gzip.open(tsv_path, "rt") as f:
-            header = f.readline()  # skip header
+            header_line = f.readline().rstrip("\n")
+            header_cols = header_line.split("\t")
+            try:
+                ik14_col = header_cols.index("inchikey14")
+            except ValueError:
+                print(f"  WARNING: {dir_name} has no inchikey14 column, skipping")
+                continue
             for line in f:
                 parts = line.rstrip("\n").split("\t")
-                # inchikey14 is column index 3 (original_smiles, canonical_smiles, inchikey, inchikey14, ...)
-                if len(parts) > 3 and parts[3]:
-                    entries.append((parts[3], dir_name, local_row))
+                if len(parts) > ik14_col and parts[ik14_col]:
+                    entries.append((parts[ik14_col], dir_name, local_row))
                 local_row += 1
 
         print(f"  {dir_name}: {local_row:,} rows indexed")

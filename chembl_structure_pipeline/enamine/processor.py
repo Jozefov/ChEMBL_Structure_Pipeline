@@ -26,7 +26,7 @@ from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 import numpy as np
 
-from . import MORGAN_RADIUS, MORGAN_NBITS, PACKED_WIDTH, TSV_COLUMNS, ERROR_COLUMNS
+from . import MORGAN_RADIUS, MORGAN_NBITS, PACKED_WIDTH, TSV_COLUMNS_CORE, ERROR_COLUMNS, INPUT_COLUMNS_DROP
 from .worker import worker_process_chunk
 
 
@@ -159,23 +159,27 @@ def process_enamine_stream(
 
     line_iter = iter(input_lines)
 
-    # Skip header if requested
-    if skip_header and not is_resume:
+    # Passthrough columns: indices of input columns to preserve in output
+    # (all except smiles, MW, InChiKey which we recompute)
+    passthrough_indices = []
+    passthrough_names = []
+
+    # Read and parse header if requested
+    if skip_header:
         try:
-            next(line_iter)
+            header_line = next(line_iter)
         except StopIteration:
-            pass
+            header_line = ""
+        input_cols = header_line.rstrip("\n\r").split("\t")
+        for idx, col_name in enumerate(input_cols):
+            if col_name.lower() not in INPUT_COLUMNS_DROP:
+                passthrough_indices.append(idx)
+                passthrough_names.append(col_name)
 
     # Skip already-processed lines on resume
     if resume_from > 0:
         skip_start = time.time()
         skipped = 0
-        # If we skipped the header in the original run, skip it again
-        if skip_header:
-            try:
-                next(line_iter)
-            except StopIteration:
-                pass
         for _ in range(resume_from):
             try:
                 next(line_iter)
@@ -198,7 +202,8 @@ def process_enamine_stream(
     try:
         # Write headers for fresh run
         if not is_resume:
-            header = "\t".join(TSV_COLUMNS) + "\n"
+            out_columns = list(TSV_COLUMNS_CORE) + passthrough_names
+            header = "\t".join(out_columns) + "\n"
             f_tsv.write(header.encode())
             err_header = "\t".join(ERROR_COLUMNS) + "\n"
             f_errors.write(err_header.encode())
@@ -253,6 +258,7 @@ def process_enamine_stream(
                 f_fps=f_fps,
                 f_sums=f_sums,
                 f_errors=f_errors,
+                passthrough_indices=passthrough_indices,
             )
 
             total_ok += batch_ok
@@ -325,6 +331,7 @@ def _process_batch(
     f_fps,
     f_sums,
     f_errors,
+    passthrough_indices=None,
 ):
     """Process one batch of SMILES through the worker pool.
 
@@ -417,13 +424,22 @@ def _process_batch(
 
     # Write results in order (preserves alignment)
     ok_fps = []
+    pt_indices = passthrough_indices or []
     for i in range(len(batch_smiles)):
         result = results.get(i)
         if result is not None:
             canon_smi, inchikey, inchikey14, formula, mass, packed_fp = result
-            # Write TSV line (original_smiles from input, rest from canonical)
+            # Core columns: original_smiles from input, rest from canonical mol
             original_smi = batch_smiles[i]
-            line = f"{original_smi}\t{canon_smi}\t{inchikey}\t{inchikey14}\t{formula}\t{mass}\n"
+            core = f"{original_smi}\t{canon_smi}\t{inchikey}\t{inchikey14}\t{formula}\t{mass}"
+            # Passthrough columns from original input line
+            if pt_indices:
+                input_parts = batch_lines[i].split("\t") if i < len(batch_lines) else []
+                pt_values = [input_parts[j] if j < len(input_parts) else ""
+                             for j in pt_indices]
+                line = core + "\t" + "\t".join(pt_values) + "\n"
+            else:
+                line = core + "\n"
             f_tsv.write(line.encode())
             # Collect fingerprint for binary write
             f_fps.write(packed_fp)
