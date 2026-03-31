@@ -652,6 +652,8 @@ def standardize_and_canonicalize_mol(m, check_exclusion=False):
     # Step 3: Stereo-safe tautomer canonicalization
     m = _canonicalize_tautomer(m)
 
+    m = uncharge_mol(m)
+
     return m
 
 
