@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N pubchem_canon
-#PBS -l select=1:ncpus=48:mem=182gb:scratch_local=40gb
+#PBS -l select=1:ncpus=48:mem=96gb:scratch_local=40gb
 #PBS -l walltime=48:00:00
 #PBS -o /storage/plzen1/home/jozefov_147/projects/msngym/data/candidates_generation/pubchem_canon_molecules/pubchem_canon.stdout
 #PBS -e /storage/plzen1/home/jozefov_147/projects/msngym/data/candidates_generation/pubchem_canon_molecules/pubchem_canon.stderr
