@@ -608,7 +608,7 @@ def standardize_molblock(ctab, check_exclusion=True):
 def standardize_and_canonicalize_mol(m, check_exclusion=False):
     """Full standardization pipeline: normalize, strip salts, canonicalize tautomers.
 
-    Combines three steps that the original ChEMBL pipeline keeps separate:
+    Combines these steps:
 
       1. standardize_mol()  — normalize functional groups (nitro, sulfoxide,
          amide tautomers, etc.), uncharge, remove Hs (stereo-safe), kekulize.
@@ -618,11 +618,22 @@ def standardize_and_canonicalize_mol(m, check_exclusion=False):
          NOTE: uses get_fragment_parent_mol, NOT get_parent_mol, so isotope
          labels (deuterium, 13C, etc.) are preserved.
 
-      3. TautomerEnumerator.Canonicalize()  — force each molecule into a single
+      3. SMILES round-trip  — re-parse the molecule from its canonical SMILES
+         to ensure canonical atom ordering. RDKit's TautomerEnumerator is
+         sensitive to internal atom indices; without this step, molecules
+         processed through steps 1-2 retain their original parse-order
+         indices, which can cause the enumerator to explore different
+         tautomer subsets and break idempotency.
+
+      4. TautomerEnumerator.Canonicalize()  — force each molecule into a single
          canonical tautomeric form (keto/enol, etc.) so that different tautomers
          of the same compound produce the same SMILES. Uses stereo-safe settings
          (tautomerRemoveSp3Stereo=False, tautomerRemoveBondStereo=False) to
          preserve R/S and E/Z stereochemistry.
+
+      5. uncharge_mol()  — final neutralization. Tautomer canonicalization can
+         shift protons into charged heterocyclic positions (e.g. [NH+] in
+         pyrimidines); this step ensures the output is always neutral.
 
     Args:
         m: RDKit Mol object
@@ -630,7 +641,8 @@ def standardize_and_canonicalize_mol(m, check_exclusion=False):
             compounds (returns input mol unchanged). Default False.
 
     Returns:
-        RDKit Mol object (standardized, salt-stripped, tautomer-canonicalized)
+        RDKit Mol object (standardized, salt-stripped, tautomer-canonicalized,
+        neutralized)
 
     Example:
         >>> from rdkit import Chem
@@ -649,9 +661,13 @@ def standardize_and_canonicalize_mol(m, check_exclusion=False):
     # Step 2: Strip salts/solvents, neutralize — but preserve isotopes
     m, _ = get_fragment_parent_mol(m, neutralize=True)
 
-    # Step 3: Stereo-safe tautomer canonicalization
+    # Step 3: Canonical atom ordering via SMILES round-trip
+    m = Chem.MolFromSmiles(Chem.MolToSmiles(m))
+
+    # Step 4: Stereo-safe tautomer canonicalization
     m = _canonicalize_tautomer(m)
 
+    # Step 5: Neutralize charges reintroduced by tautomer canonicalization
     m = uncharge_mol(m)
 
     return m
