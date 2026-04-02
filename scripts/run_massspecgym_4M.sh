@@ -19,6 +19,11 @@ module add mambaforge
 export CONDA_PKGS_DIRS="$SCRATCHDIR/conda_pkgs"
 mamba activate "$ENV_PREFIX"
 
+# Cleanup stale PBS spool files from previous runs on this node
+if [ -d /var/spool/pbs/undelivered ]; then
+    find /var/spool/pbs/undelivered -user "$USER" -type f -delete 2>/dev/null || true
+fi
+
 cp "$INPUT" "$SCRATCHDIR/input.tsv" || exit 2
 
 # Copy partial output if resuming
@@ -42,9 +47,9 @@ python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     --checkpoint-dir "$DATA_DIR" \
     --checkpoint-name "MassSpecGym_retrieval_molecules_4M_canonicalized.tsv" \
     $RESUME_FLAG \
-    2>&1 | tee "$SCRATCHDIR/canon_4M.log"
+    > "$SCRATCHDIR/canon_4M.log" 2>&1
 
-EXIT_CODE=${PIPESTATUS[0]}
+EXIT_CODE=$?
 
 # Always copy results back
 cp "$SCRATCHDIR/output.tsv" "$OUTPUT" 2>/dev/null
@@ -52,5 +57,7 @@ cp "$SCRATCHDIR/output.tsv.progress.json" "$OUTPUT.progress.json" 2>/dev/null
 cp "$SCRATCHDIR/canon_4M.log" "$DATA_DIR/canon_4M.log" 2>/dev/null
 
 echo "Done at $(date)"
+echo "=== Last 20 lines of processing log ==="
+tail -20 "$SCRATCHDIR/canon_4M.log" 2>/dev/null || true
 clean_scratch
 exit $EXIT_CODE

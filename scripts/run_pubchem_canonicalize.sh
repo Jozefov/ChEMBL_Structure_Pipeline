@@ -19,6 +19,11 @@ module add mambaforge
 export CONDA_PKGS_DIRS="$SCRATCHDIR/conda_pkgs"
 mamba activate "$ENV_PREFIX"
 
+# Cleanup stale PBS spool files from previous runs on this node
+if [ -d /var/spool/pbs/undelivered ]; then
+    find /var/spool/pbs/undelivered -user "$USER" -type f -delete 2>/dev/null || true
+fi
+
 # Copy input to scratch for faster I/O
 cp "$INPUT" "$SCRATCHDIR/pubchem.tsv" || exit 2
 
@@ -46,9 +51,9 @@ python "$REPO_DIR/scripts/canonicalize_pubchem.py" \
     --batch-size 500000 \
     --checkpoint-dir "$OUTPUT_DIR" \
     $RESUME_FLAG \
-    2>&1 | tee "$SCRATCHDIR/pubchem_canon.log"
+    > "$SCRATCHDIR/pubchem_canon.log" 2>&1
 
-EXIT_CODE=${PIPESTATUS[0]}
+EXIT_CODE=$?
 
 echo "Python exit code: $EXIT_CODE"
 echo "Finished at $(date)"
@@ -59,6 +64,8 @@ cp "$SCRATCHDIR/pubchem_canonicalized.tsv.progress.json" "$OUTPUT.progress.json"
 cp "$SCRATCHDIR/pubchem_canon.log" "$OUTPUT_DIR/pubchem_canon.log" 2>/dev/null
 
 echo "Output: $OUTPUT"
+echo "=== Last 20 lines of processing log ==="
+tail -20 "$SCRATCHDIR/pubchem_canon.log" 2>/dev/null || true
 clean_scratch
 
 exit $EXIT_CODE
